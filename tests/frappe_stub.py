@@ -138,6 +138,14 @@ class UserStore:
 				roles.extend(self.frappe.flags.role_profile_roles.get(profile, []))
 			doc.set("roles", [FakeDoc({"role": r}) for r in dict.fromkeys(roles)])
 
+		# Mirror User.set_system_user(): the two standard types are derived from whether
+		# any assigned role has desk access; a custom User Type is kept as set.
+		if doc.get("user_type") in self.frappe.flags.standard_user_types or not doc.get("user_type"):
+			has_desk_access = any(
+				row.get("role") in self.frappe.flags.desk_roles for row in doc.get("roles", [])
+			)
+			doc.set("user_type", "System User" if has_desk_access else "Website User")
+
 		self.users[name] = doc
 		return doc
 
@@ -165,7 +173,13 @@ def install():
 	frappe.DoesNotExistError = DoesNotExistError
 	frappe.DuplicateEntryError = DuplicateEntryError
 	frappe.ValidationError = ValidationError
-	frappe.flags = types.SimpleNamespace(role_profile_roles={}, module_profiles={}, signup_disabled=False)
+	frappe.flags = types.SimpleNamespace(
+		role_profile_roles={},
+		module_profiles={},
+		signup_disabled=False,
+		standard_user_types={"System User", "Website User"},
+		desk_roles=set(),
+	)
 	frappe.session = types.SimpleNamespace(user="Guest")
 	frappe._ = lambda msg, *a, **kw: msg
 	frappe.generate_hash = lambda length=56: "h" * (length or 56)

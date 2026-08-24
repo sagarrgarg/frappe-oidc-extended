@@ -218,7 +218,10 @@ def custom(code: str, state: str):
                 "send_welcome_email": 0,
                 "enabled": 1,
                 "new_password": frappe.generate_hash(),
-                "user_type": "System User"
+                # Frappe replaces a standard user type on save with one derived from the
+                # desk access of the user's roles, so this is the value that applies to
+                # a user without desk roles - and the one that a custom User Type keeps.
+                "user_type": oidc_extended_configuration.get("new_user_type") or "Website User",
             }
         )
 

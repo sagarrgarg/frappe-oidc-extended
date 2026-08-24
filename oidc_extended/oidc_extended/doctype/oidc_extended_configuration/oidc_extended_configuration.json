@@ -16,6 +16,7 @@
   "column_break_0",
   "users_section",
   "user_provisioning",
+  "new_user_type",
   "verification_section",
   "verify_id_token_signature",
   "jwks_url",
@@ -85,6 +86,14 @@
    "fieldtype": "Select",
    "label": "User Provisioning",
    "options": "Use Social Login Key Setting\nAlways Create Users\nNever Create Users"
+  },
+  {
+   "default": "Website User",
+   "description": "The User Type given to users this app creates. Frappe overrides the two standard types on every save - a user holding any role with desk access becomes a System User, everyone else a Website User (User.set_system_user) - so on a site where System Users are billed seats, the role profiles you map decide the cost. A custom User Type is honoured as set.",
+   "fieldname": "new_user_type",
+   "fieldtype": "Link",
+   "label": "User Type For New Users",
+   "options": "User Type"
   },
   {
    "fieldname": "verification_section",
