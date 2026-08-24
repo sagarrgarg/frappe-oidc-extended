@@ -10,6 +10,7 @@ import jwt
 import frappe
 import frappe.utils
 from frappe import _ # For translations
+from frappe.utils import escape_html
 
 
 # Frappe replaced the base64 state blob with a single-use token in v15.116.0 and
@@ -110,7 +111,7 @@ def start(provider: str | None = None, redirect_to: str | None = None):
     if not provider or not frappe.db.exists("Social Login Key", provider):
         frappe.respond_as_web_page(
             _("Unknown Provider"),
-            _("There is no Social Login Key named {0} on this site.").format(provider),
+            _("There is no Social Login Key named {0} on this site.").format(escape_html(str(provider))),
             http_status_code=404,
             indicator_color="red",
             success=False,
@@ -122,7 +123,7 @@ def start(provider: str | None = None, redirect_to: str | None = None):
     if not frappe.db.get_value("Social Login Key", provider, "enable_social_login"):
         frappe.respond_as_web_page(
             _("Not Allowed"),
-            _("Login through {0} is disabled on this site.").format(provider),
+            _("Login through {0} is disabled on this site.").format(escape_html(str(provider))),
             http_status_code=403,
             indicator_color="orange",
             success=False,
@@ -175,7 +176,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         frappe.logger().warning(f"The identity provider returned an error: {error} ({error_description})")
         frappe.respond_as_web_page(
             _("Login Failed"),
-            _("The identity provider refused the login: {0}").format(error_description or error),
+            _("The identity provider refused the login: {0}").format(escape_html(str(error_description or error))),
             http_status_code=400,
             indicator_color="red",
             success=False,
@@ -208,7 +209,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         frappe.logger().error(f"No Social Login Key named {provider_name} exists.")
         frappe.respond_as_web_page(
             _("Unknown Provider"),
-            _("There is no Social Login Key named {0} on this site.").format(provider_name),
+            _("There is no Social Login Key named {0} on this site.").format(escape_html(str(provider_name))),
             http_status_code=404,
             indicator_color="red",
             success=False,
@@ -221,7 +222,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         frappe.logger().warning(f"The Social Login Key {provider_name} is disabled.")
         frappe.respond_as_web_page(
             _("Not Allowed"),
-            _("Login through {0} is disabled on this site.").format(provider_name),
+            _("Login through {0} is disabled on this site.").format(escape_html(str(provider_name))),
             http_status_code=403,
             indicator_color="orange",
             success=False,
@@ -236,7 +237,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         frappe.respond_as_web_page(
             _("Not Configured"),
             _("The provider {0} has no OIDC Extended Configuration. Create one to map its groups to roles.").format(
-                provider_name
+                escape_html(str(provider_name))
             ),
             http_status_code=501,
             indicator_color="red",
@@ -273,7 +274,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         frappe.respond_as_web_page(
             _("Missing User ID"),
             _("The identity provider did not return the {0} claim, which identifies the user.").format(
-                user_id_claim_name
+                escape_html(str(user_id_claim_name))
             ),
             http_status_code=400,
             indicator_color="red",
@@ -389,7 +390,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
 
     if not user.enabled:
         frappe.logger().info(f"The user {user.name} is disabled.")
-        frappe.respond_as_web_page(_("Not Allowed"), _("User {0} is disabled").format(user.name))
+        frappe.respond_as_web_page(_("Not Allowed"), _("User {0} is disabled").format(escape_html(str(user.name))))
         return False
 
     if not user.get_social_login_userid(provider_name):

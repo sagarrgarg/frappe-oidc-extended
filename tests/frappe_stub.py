@@ -364,6 +364,16 @@ def install():
 	utils.get_url = lambda path="", **kw: f"https://erp.example.com{path}" if str(path).startswith("/") else (path or "https://erp.example.com")
 	utils.logger = types.SimpleNamespace(set_log_level=lambda level: None)
 	utils.cint = lambda v: int(v or 0)
+
+	def escape_html(text):
+		"""As frappe.utils.escape_html does: the message of a web page is raw HTML."""
+		for character, escaped in (
+			("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ('"', "&quot;"), ("'", "&#39;")
+		):
+			text = str(text).replace(character, escaped)
+		return text
+
+	utils.escape_html = escape_html
 	frappe.utils = utils
 
 	# -- frappe.utils.oauth ------------------------------------------------------
