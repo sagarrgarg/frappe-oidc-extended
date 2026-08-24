@@ -277,6 +277,14 @@ def install():
 			return None
 
 		def get_value(self, doctype, name, fieldname=None, **kwargs):
+			if doctype == "User Social Login" and isinstance(name, dict):
+				# Child table lookup: returns the parent User, as Frappe does.
+				for user_name, user in frappe.user_store.users.items():
+					for row in user.get("social_logins", []):
+						if all(row.get(k) == v for k, v in name.items()):
+							return user_name if fieldname == "parent" else row.get(fieldname)
+				return None
+
 			doc = frappe.docs.get((doctype, name))
 			if doctype == "User":
 				doc = frappe.user_store.users.get(name)
