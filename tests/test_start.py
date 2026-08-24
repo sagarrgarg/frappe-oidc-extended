@@ -1,7 +1,5 @@
 """Point 9: an entry point that begins a login, which Frappe itself does not expose."""
 
-from unittest import mock
-
 from tests.base import PROVIDER, CallbackTestCase
 
 

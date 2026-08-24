@@ -6,7 +6,7 @@ environment is built without autoescape. Anything of the caller's that reaches i
 therefore markup, and these endpoints are reachable by guests.
 """
 
-from tests.base import PROVIDER, CallbackTestCase
+from tests.base import CallbackTestCase
 
 PAYLOAD = "<script>alert(document.domain)</script>"
 

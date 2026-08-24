@@ -3,7 +3,7 @@
 import base64
 import json
 
-from tests.base import PROVIDER, CallbackTestCase
+from tests.base import CallbackTestCase
 
 
 class TestOAuthState(CallbackTestCase):
