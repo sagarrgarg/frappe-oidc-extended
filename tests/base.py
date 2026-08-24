@@ -12,6 +12,39 @@ if str(REPO_ROOT) not in sys.path:
 from tests import frappe_stub  # noqa: E402
 
 PROVIDER = "authentik"
+SIGNING_KID = "test-signing-key"
+
+
+def _rsa_key():
+	from cryptography.hazmat.primitives.asymmetric import rsa
+
+	return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+# Generated once: the provider's signing key, and a key it never published.
+SIGNING_KEY = _rsa_key()
+ATTACKER_KEY = _rsa_key()
+
+DISCOVERY_DOCUMENT = {
+	"issuer": "https://idp.example.com/application/o/erpnext/",
+	"jwks_uri": "https://idp.example.com/application/o/erpnext/jwks/",
+	"id_token_signing_alg_values_supported": ["RS256", "ES256"],
+}
+
+
+class FakeJWKClient:
+	"""Stands in for PyJWKClient so the JWKS fetch stays out of the test.
+
+	Signature verification itself is done by the real PyJWT with a real key.
+	"""
+
+	def __init__(self, key):
+		self.key = key
+
+	def get_signing_key_from_jwt(self, token):
+		import types
+
+		return types.SimpleNamespace(key=self.key)
 
 
 class CallbackTestCase(unittest.TestCase):
@@ -34,7 +67,7 @@ class CallbackTestCase(unittest.TestCase):
 				"provider_name": PROVIDER,
 				"enable_social_login": 1,
 				"client_id": "erpnext-client-id",
-				"client_secret": "erpnext-client-secret",
+				"client_secret": "erpnext-client-secret-0123456789abcdef",
 				"base_url": "https://idp.example.com",
 				"authorize_url": "/application/o/authorize/",
 				"access_token_url": "/application/o/token/",
@@ -59,6 +92,9 @@ class CallbackTestCase(unittest.TestCase):
 				"fallback_role_profiles": [],
 				"group_module_mappings": [],
 				"fallback_module_profile": None,
+				"verify_id_token_signature": 1,
+				"jwks_url": None,
+				"issuer": None,
 			}
 		)
 		self.frappe.docs[("OIDC Extended Configuration", PROVIDER)] = self.config
@@ -110,6 +146,9 @@ class CallbackTestCase(unittest.TestCase):
 		return create_oauth_state(redirect_to)
 
 	def id_token_claims(self, **overrides):
+		import time
+
+		now = int(time.time())
 		claims = {
 			"sub": "b1f0c2d4-0000-4000-8000-000000000001",
 			"email": "jane@example.com",
@@ -117,32 +156,71 @@ class CallbackTestCase(unittest.TestCase):
 			"family_name": "Doe",
 			"groups": ["erp-sales"],
 			"aud": self.social_login_key.client_id,
-			"iss": "https://idp.example.com/application/o/erpnext/",
+			"iss": DISCOVERY_DOCUMENT["issuer"],
+			"iat": now,
+			"exp": now + 300,
 		}
 		claims.update(overrides)
 		return claims
 
-	def encode_id_token(self, claims=None):
+	def encode_id_token(self, claims=None, key=None, algorithm="RS256", headers=None):
+		"""Signs a token the way the identity provider would."""
 		import jwt
 
-		return jwt.encode(claims or self.id_token_claims(), "unit-test-signing-secret-0123456789", algorithm="HS256")
+		return jwt.encode(
+			claims or self.id_token_claims(),
+			key=key if key is not None else SIGNING_KEY,
+			algorithm=algorithm,
+			headers={"kid": SIGNING_KID, **(headers or {})},
+		)
 
-	def run_callback(self, code="auth-code", state=None, claims=None, token_response=None, path=None):
-		"""Invoke the callback with the token endpoint mocked out."""
+	def run_callback(
+		self,
+		code="auth-code",
+		state=None,
+		claims=None,
+		token_response=None,
+		path=None,
+		id_token=None,
+		published_key=None,
+		discovery=None,
+	):
+		"""Invoke the callback with the token endpoint and the JWKS fetch mocked out."""
 		self.frappe.request.path = path or f"/api/method/oidc_extended.callback.custom/{PROVIDER}"
 		if state is None:
 			state = self.make_state()
 
 		response = token_response
 		if response is None:
-			response = {"id_token": self.encode_id_token(claims or self.id_token_claims())}
+			response = {"id_token": id_token or self.encode_id_token(claims or self.id_token_claims())}
 
 		post = mock.Mock()
 		post.return_value.json.return_value = response
 		post.return_value.status_code = 200
 		post.return_value.ok = True
-		with mock.patch.object(self.callback.requests, "post", post):
+
+		# The provider publishes SIGNING_KEY unless a test says otherwise.
+		self.jwks_urls = []
+		key = SIGNING_KEY.public_key() if published_key is None else published_key
+
+		def jwk_client(jwks_url):
+			self.jwks_urls.append(jwks_url)
+			return FakeJWKClient(key)
+
+		self.discovery_urls = []
+		document = DISCOVERY_DOCUMENT if discovery is None else discovery
+
+		def get(url, **kwargs):
+			self.discovery_urls.append(url)
+			result = mock.Mock()
+			result.json.return_value = document
+			return result
+
+		with mock.patch.object(self.callback.requests, "post", post), mock.patch.object(
+			self.callback.requests, "get", side_effect=get
+		), mock.patch.object(self.callback, "get_jwk_client", side_effect=jwk_client):
 			result = self.callback.custom(code=code, state=state)
+
 		self.token_post = post
 		return result
 

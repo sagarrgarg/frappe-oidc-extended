@@ -24,6 +24,16 @@ DENY_LOGIN = "Deny Login"
 # identity provider (see frappe.core.doctype.user.user.STANDARD_USERS).
 RESERVED_USERS = ("Administrator", "Guest")
 
+# Asymmetric algorithms only: an id token is verified against the provider's published
+# keys, and "none" or an unexpected HMAC would let the caller pick the key.
+DEFAULT_SIGNING_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512")
+
+# The discovery document rarely changes and is read on every login.
+OPENID_CONFIGURATION_CACHE_TTL = 24 * 60 * 60
+
+# PyJWKClient keeps the fetched keys in memory, so it is worth reusing per worker.
+jwk_clients: dict = {}
+
 @frappe.whitelist(allow_guest=True)
 def custom(code: str, state: str):
     """Callback for processing the request received after a successful authentication in an identity provider (OIDC provider).
@@ -85,7 +95,11 @@ def custom(code: str, state: str):
         data=token_request_data,
     ).json()
 
-    id_token = jwt.decode(token_response["id_token"], audience="erpnext", options={"verify_signature": False})
+    id_token = decode_id_token(token_response["id_token"], social_login_provider, oidc_extended_configuration)
+
+    if id_token is None:
+        # decode_id_token has already answered the request.
+        return
 
     # Identifies the account at the identity provider. This value is stored as the
     # social login userid of the Frappe user and is what later logins match on, so it
@@ -261,6 +275,126 @@ def custom(code: str, state: str):
         desk_user=frappe.local.response.get("message") == "Logged In",
         redirect_to=redirect_to or None
     )
+
+def get_openid_configuration(social_login_provider, configuration) -> dict:
+    """The provider's OpenID discovery document, cached for a day.
+
+    Read from the configured issuer, falling back to the base URL of the Social Login
+    Key. Returns an empty dict when the document cannot be read, so that an explicitly
+    configured JWKS URL still works without it.
+    """
+    issuer = (configuration.get("issuer") or social_login_provider.base_url or "").rstrip("/")
+
+    if not issuer:
+        return {}
+
+    url = f"{issuer}/.well-known/openid-configuration"
+    cache_key = f"oidc_extended|openid_configuration|{url}"
+    cached = frappe.cache().get_value(cache_key)
+
+    if cached:
+        return cached
+
+    try:
+        document = requests.get(url, timeout=10).json()
+    except Exception as exception:
+        frappe.logger().error(f"Could not read the OpenID configuration from {url}: {exception}")
+        return {}
+
+    frappe.cache().set_value(cache_key, document, expires_in_sec=OPENID_CONFIGURATION_CACHE_TTL)
+    return document
+
+
+def get_jwk_client(jwks_url: str):
+    """A PyJWKClient for the given JWKS endpoint, reused across logins."""
+    if jwks_url not in jwk_clients:
+        jwk_clients[jwks_url] = jwt.PyJWKClient(jwks_url, cache_keys=True)
+
+    return jwk_clients[jwks_url]
+
+
+def get_signing_algorithms(openid_configuration: dict) -> list[str]:
+    """The signing algorithms the provider advertises, minus the unsafe ones."""
+    advertised = openid_configuration.get("id_token_signing_alg_values_supported") or []
+    supported = [alg for alg in advertised if alg in DEFAULT_SIGNING_ALGORITHMS]
+
+    return supported or list(DEFAULT_SIGNING_ALGORITHMS)
+
+
+def decode_id_token(encoded_id_token: str, social_login_provider, configuration) -> dict | None:
+    """Verifies the id token and returns its claims, or None if it cannot be trusted.
+
+    The token is verified against the signing keys published by the identity provider,
+    with the audience checked against the client id of this Social Login Key and, when
+    an issuer is configured, the "iss" claim checked against it. A token that fails any
+    of these is answered with a 401 page and None is returned - the claims of an
+    unverified token decide which roles the user gets, so they cannot be used.
+
+    Providers that sign symmetrically (an "HS*" algorithm) are verified against the
+    client secret, which is the shared key in that case.
+    """
+    audience = social_login_provider.client_id
+    verify_signature = configuration.get("verify_id_token_signature")
+
+    if verify_signature is None:
+        verify_signature = 1
+
+    if not frappe.utils.cint(verify_signature):
+        frappe.logger().warning(
+            "Signature verification of the id token is turned off for the provider "
+            f"{social_login_provider.name}. The claims of this token, including the groups "
+            "that decide the user's roles, are not authenticated."
+        )
+        return jwt.decode(
+            encoded_id_token,
+            audience=audience,
+            options={"verify_signature": False, "verify_aud": False},
+        )
+
+    openid_configuration = get_openid_configuration(social_login_provider, configuration)
+    issuer = configuration.get("issuer") or openid_configuration.get("issuer")
+
+    try:
+        algorithm = jwt.get_unverified_header(encoded_id_token).get("alg") or ""
+
+        if algorithm.startswith("HS"):
+            # OpenID Connect Core 15.1: symmetric signatures use the client secret.
+            key = social_login_provider.get_password("client_secret")
+            algorithms = [algorithm]
+        else:
+            jwks_url = configuration.get("jwks_url") or openid_configuration.get("jwks_uri")
+
+            if not jwks_url:
+                raise ValueError(
+                    "No JWKS URL is configured for this provider and none could be read from "
+                    f"its OpenID configuration at {issuer or social_login_provider.base_url}."
+                )
+
+            key = get_jwk_client(jwks_url).get_signing_key_from_jwt(encoded_id_token).key
+            algorithms = get_signing_algorithms(openid_configuration)
+
+        return jwt.decode(
+            encoded_id_token,
+            key=key,
+            algorithms=algorithms,
+            audience=audience,
+            issuer=issuer or None,
+            options={"require": ["exp"]},
+        )
+    except Exception as exception:
+        frappe.logger().error(
+            f"The id token from {social_login_provider.name} could not be verified: "
+            f"{type(exception).__name__}: {exception}"
+        )
+        frappe.respond_as_web_page(
+            _("Invalid Token"),
+            _("The identity provider returned a token that could not be verified. Please try again."),
+            http_status_code=401,
+            indicator_color="red",
+            success=False,
+        )
+        return None
+
 
 def find_existing_user(provider_name: str, user_id: str, email: str) -> str | None:
     """The name of the Frappe user this login belongs to, or None if there is none.

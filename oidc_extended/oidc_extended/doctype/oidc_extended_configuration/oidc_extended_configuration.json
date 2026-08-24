@@ -14,6 +14,10 @@
   "email_claim_name",
   "groups_claim_name",
   "column_break_0",
+  "verification_section",
+  "verify_id_token_signature",
+  "jwks_url",
+  "issuer",
   "roles_section",
   "fallback_role_profiles",
   "group_role_mappings",
@@ -66,6 +70,32 @@
   {
    "fieldname": "column_break_0",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "verification_section",
+   "fieldtype": "Section Break",
+   "label": "ID Token Verification"
+  },
+  {
+   "default": "1",
+   "description": "Verifies the signature of the id token against the signing keys of the identity provider. Turn this off only to debug a provider whose keys cannot be reached: an unverified id token is a bearer of unauthenticated claims, including the groups that decide the user's roles.",
+   "fieldname": "verify_id_token_signature",
+   "fieldtype": "Check",
+   "label": "Verify ID Token Signature"
+  },
+  {
+   "depends_on": "eval:doc.verify_id_token_signature",
+   "description": "The JWKS endpoint of the identity provider, for example https://auth.example.com/application/o/erpnext/jwks/. Leave empty to read it from the provider's OpenID discovery document.",
+   "fieldname": "jwks_url",
+   "fieldtype": "Data",
+   "label": "JWKS URL"
+  },
+  {
+   "depends_on": "eval:doc.verify_id_token_signature",
+   "description": "The expected \"iss\" claim of the id token. When set, tokens issued by a different issuer are rejected, and the discovery document is read from this URL. Defaults to the base URL of the Social Login Key.",
+   "fieldname": "issuer",
+   "fieldtype": "Data",
+   "label": "Issuer"
   },
   {
    "fieldname": "roles_section",
