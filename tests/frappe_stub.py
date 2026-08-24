@@ -378,7 +378,10 @@ def install():
 	# -- frappe.utils ------------------------------------------------------------
 	utils = types.ModuleType("frappe.utils")
 	utils.get_url = lambda path="", **kw: f"https://erp.example.com{path}" if str(path).startswith("/") else (path or "https://erp.example.com")
-	utils.logger = types.SimpleNamespace(set_log_level=lambda level: None)
+	frappe.log_level_calls = []
+	utils.logger = types.SimpleNamespace(
+		set_log_level=lambda level: frappe.log_level_calls.append(level)
+	)
 	utils.cint = lambda v: int(v or 0)
 
 	def escape_html(text):

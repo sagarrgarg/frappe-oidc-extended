@@ -117,12 +117,24 @@ class TestReservedAccounts(CallbackTestCase):
 		self.assertWebPage(http_status_code=403)
 		self.assertNotLoggedIn()
 
-	def test_a_subject_claiming_to_be_administrator_is_refused(self):
-		self.frappe.user_store.add(email="jane@example.com", username="administrator", enabled=1)
-		self.run_callback(claims=self.id_token_claims(sub="administrator"))
+	def test_the_username_leg_cannot_reach_the_administrator_record(self):
+		admin = self.frappe.user_store.add(email="admin@example.com", username="administrator", enabled=1)
+		admin._data["name"] = "Administrator"
+		self.frappe.user_store.users["Administrator"] = admin
+		del self.frappe.user_store.users["admin@example.com"]
+
+		self.config.match_users_by_username = 1
+		self.run_callback(claims=self.id_token_claims(sub="administrator", email="nobody@example.com"))
 
 		self.assertWebPage(http_status_code=403)
 		self.assertNotLoggedIn()
+
+	def test_a_normal_user_whose_username_is_administrator_may_log_in(self):
+		"""The record named Administrator is the protected one; a username is not it."""
+		self.frappe.user_store.add(email="jane@example.com", username="administrator", enabled=1)
+		self.run_callback(claims=self.id_token_claims(sub="administrator"))
+
+		self.assertLoggedIn("jane@example.com")
 
 
 class TestRequiredClaims(CallbackTestCase):

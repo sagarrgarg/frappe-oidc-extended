@@ -26,8 +26,9 @@ except ImportError:
 from frappe.integrations.doctype.social_login_key.social_login_key import provider_allows_signup
 from frappe.sessions import clear_sessions
 
-frappe.utils.logger.set_log_level("INFO")
-#frappe.utils.logger.set_log_level("DEBUG")
+# This module deliberately does not call frappe.utils.logger.set_log_level(): it sets
+# frappe.log_level and clears frappe.loggers for the whole worker process, so importing
+# this app would reconfigure logging for every app on the site. Set the level per site.
 
 # The releases that carry frappe.utils.oauth.consume_oauth_state.
 MINIMUM_FRAPPE_VERSIONS = "15.116.0 (v15) or 16.30.0 (v16)"
@@ -510,7 +511,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         # To prevent accidental privilege issues, the Administrator must only
         # authenticate through the local ERPNext login mechanism where roles are
         # managed directly.
-        if existing_user_name in RESERVED_USERS or str(user_id).lower() in ("administrator", "guest"):
+        if existing_user_name in RESERVED_USERS:
             frappe.logger().warning(f"Attempted OIDC login with the {existing_user_name} account.")
             frappe.respond_as_web_page(
                 _("Not Allowed"),
@@ -542,8 +543,10 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
 
         update_user_names(user, first_name, last_name)
 
-        frappe.logger().info(f"The existing user {existing_user_name} fetched successfully.")
-        frappe.logger().debug(f"The existing user data: {user.as_dict()}")
+        frappe.logger().info(
+            f"The existing user {existing_user_name} was fetched: enabled={user.enabled}, "
+            f"user type {user.user_type}."
+        )
     else:
         if not may_create_user(provider_name, oidc_extended_configuration):
             frappe.logger().warning(
@@ -1194,7 +1197,14 @@ def apply_role_profiles(user, role_profiles: list[str]) -> bool:
 
 
 def redirect_post_login(desk_user: bool, redirect_to: str):
+    from frappe.www.login import sanitize_redirect
+
     frappe.local.response["type"] = "redirect"
+
+    # The target was sanitized when the login started, but it has been through Redis
+    # since, and a login can also be started by Frappe's own login page. Landing
+    # somewhere off this site after authenticating is worth one more check.
+    redirect_to = sanitize_redirect(redirect_to)
 
     if not redirect_to:
         desk_uri = "/app"
