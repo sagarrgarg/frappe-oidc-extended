@@ -38,6 +38,13 @@ doctype_js = {
 	"User": "public/js/user_oidc_warning.js"
 }
 
+# Asks each configured identity provider which of its users are still there, still
+# enabled and still in which groups. Runs hourly and skips the providers that are not
+# due; nothing happens at all unless a provider has reconciliation turned on.
+scheduler_events = {
+	"hourly": ["oidc_extended.reconciliation.run_scheduled_reconciliation"],
+}
+
 # Home Pages
 # ----------
 

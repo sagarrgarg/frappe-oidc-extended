@@ -242,6 +242,56 @@ re-applied and sessions are cleared if the assignment changed. Immediate handlin
 entitlement change needs either a notification rule at the provider or a scheduled
 reconciliation.
 
+#### Removing someone
+
+Three things have to happen when a person leaves, and OpenID Connect only carries one
+of them.
+
+| What | How |
+| --- | --- |
+| Their sessions end | Back-channel logout, immediately |
+| They cannot sign in again | The identity provider refuses them |
+| Their Frappe account stops being a provisioned account | **Reconciliation** |
+
+Without the third, a departed user keeps an enabled Frappe account with every role it
+was given: a seat on a site that bills them, a valid assignee, a member of workflows,
+and whatever local credentials that account has - a password, an API key - none of
+which the identity provider can revoke. They are fully provisioned and merely cannot
+use the front door.
+
+Nothing pushes that fact. A logout token says a session ended, not why; no standard
+signal carries "this person left" or "their entitlements shrank". So the app asks the
+provider on a schedule, under **Reconciliation** on the configuration:
+
+| Setting | Meaning |
+| --- | --- |
+| Enable Reconciliation | Off by default. When on, the provider is asked which users still exist, are still enabled, and are in which groups. |
+| Frequency | Daily or hourly. The scheduler wakes hourly and skips providers that are not due. |
+| When A User Is Gone Or Disabled | `Report Only` (log it), `Remove All Roles` (keep the account, strip entitlements), or `Disable User`. |
+| Directory Type / URL | `Keycloak` with the realm URL, or `Authentik` with its base URL. |
+| Service Account Client ID / Secret | Keycloak: a client with client authentication and service account roles on, whose service account holds `view-users` from realm-management. |
+| API Token | authentik: an API token. authentik users are matched by email, since what it puts in `sub` depends on the provider's subject mode. |
+
+Group changes are applied the same way, which is what closes the other half of the gap:
+a user removed from a mapped group has their role profiles recomputed and their
+sessions ended, without waiting for a login that may never come.
+
+**Run it as a dry run first.** From the console or a client:
+
+```python
+frappe.call("oidc_extended.reconciliation.reconcile", provider="keycloak", dry_run=1)
+```
+
+It returns what it would do - which users are absent, which are disabled at the
+provider, whose roles would change and to what - and writes nothing.
+
+Three things it refuses to do, because a de-provisioning job that misfires is worse
+than one that does not run:
+
+- act on an empty directory response, which is a broken API call far more often than an empty directory;
+- act when more than half the linked users appear to be missing or disabled, which reads like a partial answer;
+- touch `Administrator`, `Guest`, or any user who has never signed in through this provider - the last of these has nothing tying it to a directory entry, so it is not the app's to judge.
+
 #### Upgrading
 
 - Mappings are to **Role Profiles** and **Module Profiles**, not to individual roles and modules. Versions that mapped individual roles need their mappings recreated with profiles.

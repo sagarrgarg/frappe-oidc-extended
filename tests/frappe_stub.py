@@ -292,6 +292,32 @@ def install():
 
 	frappe.get_meta = _Meta
 
+	def get_all(doctype, filters=None, fields=None, pluck=None, **kwargs):
+		filters = filters or {}
+		rows = []
+
+		if doctype == "User Social Login":
+			for user_name, user in frappe.user_store.users.items():
+				for row in user.get("social_logins", []):
+					if all(row.get(k) == v for k, v in filters.items()):
+						rows.append({"parent": user_name, **row.as_dict()})
+		else:
+			for (dt, name), doc in frappe.docs.items():
+				if dt == doctype and all(doc.get(k) == v for k, v in filters.items()):
+					rows.append({"name": name, **doc.as_dict()})
+
+		if pluck:
+			return [row.get(pluck) for row in rows]
+
+		if fields:
+			return [{field: row.get(field) for field in fields} for row in rows]
+
+		return rows
+
+	frappe.get_all = get_all
+	frappe.only_for = lambda *roles: None
+	frappe.get_traceback = lambda *a, **kw: "traceback"
+
 	# -- db ----------------------------------------------------------------------
 	class _DB:
 		def __init__(self):
@@ -327,6 +353,9 @@ def install():
 			if isinstance(fieldname, list | tuple):
 				return [doc.get(f) for f in fieldname]
 			return doc.get(fieldname)
+
+		def get_all(self, doctype, filters=None, fields=None, pluck=None, **kwargs):
+			return frappe.get_all(doctype, filters=filters, fields=fields, pluck=pluck, **kwargs)
 
 		def commit(self):
 			self.commits += 1
@@ -374,6 +403,8 @@ def install():
 		set_log_level=lambda level: frappe.log_level_calls.append(level)
 	)
 	utils.cint = lambda v: int(v or 0)
+	utils.now = lambda: "2026-08-24 12:00:00"
+	utils.time_diff_in_hours = lambda a, b: 999
 
 	def escape_html(text):
 		"""As frappe.utils.escape_html does: the message of a web page is raw HTML."""

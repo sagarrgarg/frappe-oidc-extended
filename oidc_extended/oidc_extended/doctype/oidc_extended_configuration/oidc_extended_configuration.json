@@ -29,7 +29,17 @@
   "unmapped_user_action",
   "modules_section",
   "fallback_module_profile",
-  "group_module_mappings"
+  "group_module_mappings",
+  "reconciliation_section",
+  "enable_reconciliation",
+  "reconciliation_frequency",
+  "absent_user_action",
+  "directory_type",
+  "directory_url",
+  "directory_client_id",
+  "directory_client_secret",
+  "directory_api_token",
+  "last_reconciled_on"
  ],
  "fields": [
   {
@@ -182,6 +192,75 @@
    "label": "Group To Module Mappings",
    "options": "OIDC Group To Module Mapping",
    "description": "Map OIDC groups to ERPNext modules. This controls which modules are visible on the workspace/sidebar for the user."
+  },
+  {
+   "fieldname": "reconciliation_section",
+   "fieldtype": "Section Break",
+   "label": "Reconciliation"
+  },
+  {
+   "fieldname": "enable_reconciliation",
+   "fieldtype": "Check",
+   "default": "0",
+   "label": "Enable Reconciliation",
+   "description": "Asks the identity provider on a schedule which users still exist, are still enabled and are still in which groups, and applies the answer. Nothing in OpenID Connect pushes this: removing someone from a group, or from the directory, otherwise reaches Frappe only at their next login - which, once they are gone, never comes."
+  },
+  {
+   "fieldname": "reconciliation_frequency",
+   "fieldtype": "Select",
+   "default": "Daily",
+   "depends_on": "eval:doc.enable_reconciliation",
+   "label": "Frequency",
+   "options": "Daily\nHourly"
+  },
+  {
+   "fieldname": "absent_user_action",
+   "fieldtype": "Select",
+   "default": "Report Only",
+   "depends_on": "eval:doc.enable_reconciliation",
+   "label": "When A User Is Gone Or Disabled",
+   "description": "What to do with a Frappe user the directory no longer has, or has disabled. \"Report Only\" writes to the log and changes nothing. The other two strip the role profiles and module profile first, so that a user re-enabled locally does not return with the entitlements they left with.",
+   "options": "Report Only\nRemove All Roles\nDisable User"
+  },
+  {
+   "fieldname": "directory_type",
+   "fieldtype": "Select",
+   "depends_on": "eval:doc.enable_reconciliation",
+   "label": "Directory Type",
+   "options": "\nKeycloak\nAuthentik"
+  },
+  {
+   "fieldname": "directory_url",
+   "fieldtype": "Data",
+   "depends_on": "eval:doc.enable_reconciliation",
+   "label": "Directory URL",
+   "description": "For Keycloak, the realm URL - the same base URL the Social Login Key uses, for example https://idp.example.com/realms/erp. For authentik, its base URL."
+  },
+  {
+   "fieldname": "directory_client_id",
+   "fieldtype": "Data",
+   "depends_on": "eval:doc.directory_type == 'Keycloak'",
+   "label": "Service Account Client ID",
+   "description": "A Keycloak client with client authentication and service account roles on, whose service account holds view-users from realm-management."
+  },
+  {
+   "fieldname": "directory_client_secret",
+   "fieldtype": "Password",
+   "depends_on": "eval:doc.directory_type == 'Keycloak'",
+   "label": "Service Account Client Secret"
+  },
+  {
+   "fieldname": "directory_api_token",
+   "fieldtype": "Password",
+   "depends_on": "eval:doc.directory_type == 'Authentik'",
+   "label": "API Token",
+   "description": "authentik matches users by email address: what it puts in `sub` depends on the provider's subject mode."
+  },
+  {
+   "fieldname": "last_reconciled_on",
+   "fieldtype": "Datetime",
+   "label": "Last Reconciled On",
+   "read_only": 1
   }
  ],
  "links": [],
