@@ -198,10 +198,11 @@ def install():
 	frappe.generate_hash = lambda length=56: "h" * (length or 56)
 	frappe.throw = _throw
 
-	def whitelist(allow_guest=False, methods=None, xss_safe=False):
+	def whitelist(allow_guest=False, xss_safe=False, methods=None):
 		def decorator(fn):
 			fn.is_whitelisted = True
 			fn.allow_guest = allow_guest
+			fn.allowed_methods = methods or ["GET", "POST", "PUT", "DELETE"]
 			return fn
 
 		return decorator

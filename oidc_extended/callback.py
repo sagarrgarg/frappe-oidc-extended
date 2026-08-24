@@ -4,6 +4,7 @@
 # - https://github.com/castlecraft/microsoft_integration/blob/main/microsoft_integration/callback.py
 
 import json
+import time
 import requests
 import jwt
 
@@ -54,6 +55,16 @@ OPENID_CONFIGURATION_CACHE_TTL = 24 * 60 * 60
 
 # PyJWKClient keeps the fetched keys in memory, so it is worth reusing per worker.
 jwk_clients: dict = {}
+
+# OpenID Connect Back-Channel Logout 1.0.
+BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+
+# A logout token is delivered server to server and acted on at once, so it has no
+# business being old. Tokens outside this window are refused, and their identifiers are
+# remembered for as long as one could still be replayed.
+LOGOUT_TOKEN_MAX_AGE = 10 * 60
+LOGOUT_TOKEN_CLOCK_SKEW = 2 * 60
+LOGOUT_TOKEN_REPLAY_TTL = LOGOUT_TOKEN_MAX_AGE + LOGOUT_TOKEN_CLOCK_SKEW
 
 def frappe_is_supported() -> bool:
     """Whether this Frappe carries the OAuth helpers the callback is built on.
@@ -134,6 +145,139 @@ def start(provider: str | None = None, redirect_to: str | None = None):
     # sanitize_redirect keeps `redirect_to` on this site: it is a parameter of a
     # guest-facing URL that decides where the user lands once they are logged in.
     frappe.local.response["location"] = get_oauth2_authorize_url(provider, sanitize_redirect(redirect_to))
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def backchannel_logout(logout_token: str | None = None):
+    """Ends the Frappe sessions of a user the identity provider has logged out.
+
+    URL: /api/method/oidc_extended.callback.backchannel_logout/<provider name>
+
+    Configure that URL as the provider's Logout URI, with the back-channel method. The
+    identity provider posts a signed logout token when a session ends there - a user
+    logging out, an administrator deleting a session, an account being deactivated or
+    deleted - and this ends the matching sessions here. Without it a Frappe session
+    outlives everything that happens at the provider, because Frappe's session is a
+    cookie backed by its own record and nothing about the provider is consulted again
+    once the login is done.
+
+    Every session of the user is ended, not only the one named by the `sid` claim: the
+    reason this exists is that access has been withdrawn, and this app does not record
+    which Frappe session belongs to which session at the provider.
+
+    Answers 200 when there is nothing to do - an unknown subject is not an error, and
+    saying so would tell an unauthenticated caller which subjects exist here.
+    """
+    request_path_components = frappe.request.path[1:].split("/")
+
+    if not len(request_path_components) == 4 or not request_path_components[3]:
+        return logout_error("invalid_request", "The logout URL is invalid.")
+
+    provider_name = request_path_components[3]
+
+    if not frappe.db.exists("Social Login Key", provider_name):
+        return logout_error("invalid_request", "Unknown provider.")
+
+    if not frappe.db.exists("OIDC Extended Configuration", provider_name):
+        return logout_error("invalid_request", "The provider has no OIDC Extended Configuration.")
+
+    social_login_provider = frappe.get_doc("Social Login Key", provider_name)
+    oidc_extended_configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider_name)
+
+    if not signature_verification_enabled(oidc_extended_configuration):
+        # The token is the only thing that says this request came from the provider. If
+        # signatures are not checked, anyone who can reach this endpoint could end
+        # anyone's session, so the feature is refused rather than trusted blindly.
+        frappe.logger().error(
+            f"Refusing a back-channel logout for {provider_name}: id token signature "
+            f"verification is turned off, so a logout token cannot be trusted."
+        )
+        return logout_error("invalid_request", "Token verification is disabled for this provider.")
+
+    if not logout_token:
+        return logout_error("invalid_request", "No logout_token was posted.")
+
+    try:
+        # A logout token carries iss, aud, iat, jti and a sub and/or sid; it has no exp
+        # (OpenID Connect Back-Channel Logout 1.0, 2.4), so freshness is checked below.
+        claims = verify_token(
+            logout_token,
+            social_login_provider,
+            oidc_extended_configuration,
+            require=("iss", "aud", "iat", "jti"),
+            # PyJWT refuses a token issued in the future; allow for a provider whose
+            # clock runs a little ahead of this server's.
+            leeway=LOGOUT_TOKEN_CLOCK_SKEW,
+        )
+    except Exception as exception:
+        frappe.logger().error(
+            f"A logout token from {provider_name} could not be verified: "
+            f"{type(exception).__name__}: {exception}"
+        )
+        return logout_error("invalid_request", "The logout token could not be verified.")
+
+    error = validate_logout_claims(claims, provider_name)
+
+    if error:
+        return error
+
+    user_name = frappe.db.get_value(
+        "User Social Login", {"provider": provider_name, "userid": claims.get("sub")}, "parent"
+    )
+
+    if not user_name:
+        frappe.logger().info(
+            f"A back-channel logout from {provider_name} named a subject with no user here."
+        )
+        return
+
+    frappe.logger().info(f"Ending the sessions of {user_name}: {provider_name} logged them out.")
+    clear_sessions(user=user_name, force=True)
+    frappe.clear_cache(user=user_name)
+    frappe.db.commit()
+
+
+def validate_logout_claims(claims: dict, provider_name: str) -> dict | None:
+    """Checks the claims a logout token must carry. Returns an error to answer with."""
+    events = claims.get("events")
+
+    if not isinstance(events, dict) or BACKCHANNEL_LOGOUT_EVENT not in events:
+        # Without this a token issued for another purpose - an id token, say - would be
+        # accepted as a logout instruction (Back-Channel Logout 1.0, 2.6).
+        return logout_error("invalid_request", "The token is not a back-channel logout token.")
+
+    if "nonce" in claims:
+        # A logout token must not carry a nonce; one that does is an id token replayed.
+        return logout_error("invalid_request", "A logout token must not contain a nonce.")
+
+    if not claims.get("sub"):
+        # This app matches users by the subject; a token carrying only `sid` names a
+        # session at the provider that was never recorded here.
+        return logout_error("invalid_request", "The logout token has no sub claim.")
+
+    issued_at = claims.get("iat")
+    # `iat` is seconds since the epoch in UTC. time.time() is the same scale;
+    # frappe.utils.now_datetime() is the site's timezone and would be read back as the
+    # server's, skewing this by the offset between them.
+    age = time.time() - float(issued_at)
+
+    if age > LOGOUT_TOKEN_MAX_AGE or age < -LOGOUT_TOKEN_CLOCK_SKEW:
+        return logout_error("invalid_request", "The logout token is not fresh.")
+
+    replay_key = f"oidc_extended|logout_token|{provider_name}|{claims.get('jti')}"
+
+    if frappe.cache.get_value(replay_key):
+        frappe.logger().warning(f"A logout token from {provider_name} was replayed.")
+        return logout_error("invalid_request", "This logout token has already been used.")
+
+    frappe.cache.set_value(replay_key, 1, expires_in_sec=LOGOUT_TOKEN_REPLAY_TTL)
+    return None
+
+
+def logout_error(error: str, description: str) -> dict:
+    """The error body of a back-channel logout (Back-Channel Logout 1.0, 2.8)."""
+    frappe.local.response["http_status_code"] = 400
+    return {"error": error, "error_description": description}
 
 
 @frappe.whitelist(allow_guest=True)
@@ -583,25 +727,66 @@ def get_signing_algorithms(openid_configuration: dict) -> list[str]:
     return supported or list(DEFAULT_SIGNING_ALGORITHMS)
 
 
-def decode_id_token(encoded_id_token: str, social_login_provider, configuration) -> dict | None:
-    """Verifies the id token and returns its claims, or None if it cannot be trusted.
-
-    The token is verified against the signing keys published by the identity provider,
-    with the audience checked against the client id of this Social Login Key and, when
-    an issuer is configured, the "iss" claim checked against it. A token that fails any
-    of these is answered with a 401 page and None is returned - the claims of an
-    unverified token decide which roles the user gets, so they cannot be used.
-
-    Providers that sign symmetrically (an "HS*" algorithm) are verified against the
-    client secret, which is the shared key in that case.
-    """
-    audience = social_login_provider.client_id
+def signature_verification_enabled(configuration) -> bool:
+    """Whether tokens from this provider are verified. On unless explicitly turned off."""
     verify_signature = configuration.get("verify_id_token_signature")
 
     if verify_signature is None:
         verify_signature = 1
 
-    if not frappe.utils.cint(verify_signature):
+    return bool(frappe.utils.cint(verify_signature))
+
+
+def verify_token(encoded_token: str, social_login_provider, configuration, require=("exp",), leeway: int = 0) -> dict:
+    """Verifies a token from the identity provider and returns its claims.
+
+    The signature is checked against the keys the provider publishes, the audience
+    against the client id of this Social Login Key and, when an issuer is known, the
+    "iss" claim against it. Raises if any of that fails - callers decide how to answer,
+    since an id token arrives in a browser and a logout token arrives from a server.
+
+    Providers that sign symmetrically (an "HS*" algorithm) are verified against the
+    client secret, which is the shared key in that case.
+    """
+    openid_configuration = get_openid_configuration(social_login_provider, configuration)
+    issuer = configuration.get("issuer") or openid_configuration.get("issuer")
+    algorithm = jwt.get_unverified_header(encoded_token).get("alg") or ""
+
+    if algorithm.startswith("HS"):
+        # OpenID Connect Core 15.1: symmetric signatures use the client secret.
+        key = social_login_provider.get_password("client_secret")
+        algorithms = [algorithm]
+    else:
+        jwks_url = configuration.get("jwks_url") or openid_configuration.get("jwks_uri")
+
+        if not jwks_url:
+            raise ValueError(
+                "No JWKS URL is configured for this provider and none could be read from "
+                f"its OpenID configuration at {issuer or social_login_provider.base_url}."
+            )
+
+        key = get_jwk_client(jwks_url).get_signing_key_from_jwt(encoded_token).key
+        algorithms = get_signing_algorithms(openid_configuration)
+
+    return jwt.decode(
+        encoded_token,
+        key=key,
+        algorithms=algorithms,
+        audience=social_login_provider.client_id,
+        issuer=issuer or None,
+        leeway=leeway,
+        options={"require": list(require)},
+    )
+
+
+def decode_id_token(encoded_id_token: str, social_login_provider, configuration) -> dict | None:
+    """Verifies the id token and returns its claims, or None if it cannot be trusted.
+
+    A token that fails verification is answered with a 401 page and None is returned -
+    the claims of an unverified token decide which roles the user gets, so they cannot
+    be used.
+    """
+    if not signature_verification_enabled(configuration):
         frappe.logger().warning(
             "Signature verification of the id token is turned off for the provider "
             f"{social_login_provider.name}. The claims of this token, including the groups "
@@ -609,40 +794,12 @@ def decode_id_token(encoded_id_token: str, social_login_provider, configuration)
         )
         return jwt.decode(
             encoded_id_token,
-            audience=audience,
+            audience=social_login_provider.client_id,
             options={"verify_signature": False, "verify_aud": False},
         )
 
-    openid_configuration = get_openid_configuration(social_login_provider, configuration)
-    issuer = configuration.get("issuer") or openid_configuration.get("issuer")
-
     try:
-        algorithm = jwt.get_unverified_header(encoded_id_token).get("alg") or ""
-
-        if algorithm.startswith("HS"):
-            # OpenID Connect Core 15.1: symmetric signatures use the client secret.
-            key = social_login_provider.get_password("client_secret")
-            algorithms = [algorithm]
-        else:
-            jwks_url = configuration.get("jwks_url") or openid_configuration.get("jwks_uri")
-
-            if not jwks_url:
-                raise ValueError(
-                    "No JWKS URL is configured for this provider and none could be read from "
-                    f"its OpenID configuration at {issuer or social_login_provider.base_url}."
-                )
-
-            key = get_jwk_client(jwks_url).get_signing_key_from_jwt(encoded_id_token).key
-            algorithms = get_signing_algorithms(openid_configuration)
-
-        return jwt.decode(
-            encoded_id_token,
-            key=key,
-            algorithms=algorithms,
-            audience=audience,
-            issuer=issuer or None,
-            options={"require": ["exp"]},
-        )
+        return verify_token(encoded_id_token, social_login_provider, configuration, require=("exp",))
     except Exception as exception:
         frappe.logger().error(
             f"The id token from {social_login_provider.name} could not be verified: "

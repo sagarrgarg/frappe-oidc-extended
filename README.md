@@ -153,6 +153,42 @@ https://erp.example.com/api/method/oidc_extended.callback.start/<provider name>
 It accepts an optional `redirect_to` parameter for where the user should land once
 logged in, restricted to this site. Unknown and disabled providers are refused.
 
+#### Ending sessions when the identity provider does
+
+A Frappe session is a cookie backed by Frappe's own session record. Nothing about the
+identity provider is consulted after the login completes, and the session lives until it
+idles out - `session_expiry` in System Settings, ten days by default. So a user logged
+out, deactivated or deleted at the identity provider keeps working here until then.
+
+This app answers OpenID Connect back-channel logout, which closes that gap:
+
+```
+https://erp.example.com/api/method/oidc_extended.callback.backchannel_logout/<provider name>
+```
+
+Configure that as the provider's Logout URI with the back-channel method. authentik
+supports this from version 2025.10; it posts a signed logout token when a session ends -
+a user logging out, an administrator deleting a session, an account being deactivated or
+deleted - and every Frappe session of that user is ended at once.
+
+The logout token is verified the same way the id token is: signature against the
+provider's keys, audience against the client id, issuer against the configured one. It
+must carry the back-channel logout event, must not carry a nonce, must be recent, and
+its `jti` is remembered so that a token cannot be replayed. If **Verify ID Token
+Signature** is off for the provider, back-channel logout is refused rather than trusted -
+the signature is the only thing that says the request came from the provider.
+
+Two things to know:
+
+- Every session of the user is ended, not only the one named by the `sid` claim. This app does not record which Frappe session belongs to which session at the provider, and the reason to act on a logout is usually that access has been withdrawn.
+- The identity provider must be able to reach the site: this is a server to server request, so a site behind a VPN or an IP allowlist needs a path opened.
+
+Note what this does *not* cover. Removing a user from a group is not a session event, so
+no logout token is sent - the change applies at their next login, when role profiles are
+re-applied and sessions are cleared if the assignment changed. Immediate handling of an
+entitlement change needs either a notification rule at the provider or a scheduled
+reconciliation.
+
 #### Upgrading
 
 - Mappings are to **Role Profiles** and **Module Profiles**, not to individual roles and modules. Versions that mapped individual roles need their mappings recreated with profiles.
