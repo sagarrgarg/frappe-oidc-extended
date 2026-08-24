@@ -2,3 +2,4 @@
 
 [post_model_sync]
 oidc_extended.patches.v1_0.preserve_user_provisioning_behaviour
+oidc_extended.patches.v1_0.preserve_username_matching

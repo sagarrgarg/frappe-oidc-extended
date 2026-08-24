@@ -437,6 +437,19 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         )
         return
 
+    if not email_is_acceptable(id_token, oidc_extended_configuration):
+        frappe.logger().warning(
+            f"Refusing the login for {email}: {provider_name} reports the address as unverified."
+        )
+        frappe.respond_as_web_page(
+            _("Email Not Verified"),
+            _("The identity provider has not verified your email address."),
+            http_status_code=403,
+            indicator_color="red",
+            success=False,
+        )
+        return
+
     first_name = id_token.get(given_name_claim_name, "No first name")
     last_name = id_token.get(family_name_claim_name, "No last name")
     # The groups the user have as received in the token.
@@ -446,7 +459,12 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
     frappe.logger().debug(f"Current session user: {frappe.session.user}")
 
     # Creates the user if does not exsit, otherwise updates the data according to the claims of the token.
-    existing_user_name = find_existing_user(provider_name, user_id, email)
+    existing_user_name = find_existing_user(
+        provider_name,
+        user_id,
+        email,
+        match_by_username=frappe.utils.cint(oidc_extended_configuration.get("match_users_by_username")),
+    )
     if existing_user_name:
         frappe.logger().info(f"The login for {email} matched the existing user {existing_user_name}.")
 
@@ -537,9 +555,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         frappe.respond_as_web_page(_("Not Allowed"), _("User {0} is disabled").format(escape_html(str(user.name))))
         return False
 
-    if not user.get_social_login_userid(provider_name):
-        frappe.logger().debug(f"set_social_login_userid for provider {provider_name} and user {user.name} called.")
-        user.set_social_login_userid(provider_name, userid=user_id)
+    record_social_login_userid(user, provider_name, user_id)
 
     # Allows all changes on the user in this code without checking if the operation is permitted to be done by the current user.
     frappe.logger().info(f"Allowing all changes on the user {email} without checking permissions.")
@@ -890,7 +906,63 @@ def decode_id_token(encoded_id_token: str, social_login_provider, configuration)
         return None
 
 
-def find_existing_user(provider_name: str, user_id: str, email: str) -> str | None:
+def email_is_acceptable(claims: dict, configuration) -> bool:
+    """Whether the email address of these claims may be used to find a Frappe user.
+
+    Users are matched by email address, so an address the identity provider has not
+    verified is a way into whoever owns that address here. Providers that do not send
+    the claim at all are unaffected - only an explicit "not verified" is refused.
+    """
+    require_verified = configuration.get("require_verified_email")
+
+    if require_verified is None:
+        require_verified = 1
+
+    if not frappe.utils.cint(require_verified):
+        return True
+
+    verified = claims.get("email_verified")
+
+    if verified is None:
+        return True
+
+    if isinstance(verified, str):
+        # Some providers send the claim as a string rather than a boolean.
+        return verified.strip().lower() in ("true", "1", "yes")
+
+    return bool(verified)
+
+
+def record_social_login_userid(user, provider_name: str, user_id: str):
+    """Stores the provider's subject on the user, replacing a stale one.
+
+    Frappe's `set_social_login_userid` appends a row unconditionally and
+    `get_social_login_userid` returns the first row for the provider, so writing a new
+    subject without removing the old one would leave the stale one in charge - and this
+    is what later logins are matched on.
+    """
+    current = user.get_social_login_userid(provider_name)
+
+    if current == user_id:
+        return
+
+    if current:
+        frappe.logger().warning(
+            f"The subject {provider_name} reports for {user.name} changed from {current} "
+            f"to {user_id}; replacing the one on record."
+        )
+        user.set(
+            "social_logins",
+            [row for row in user.get("social_logins", []) if row.get("provider") != provider_name],
+        )
+
+    frappe.logger().debug(f"Recording the {provider_name} subject of {user.name}.")
+    user.set_social_login_userid(provider_name, userid=user_id)
+
+
+def find_existing_user(
+    provider_name: str, user_id: str, email: str, match_by_username: bool = False
+) -> str | None:
     """The name of the Frappe user this login belongs to, or None if there is none.
 
     The social login userid is matched first: it is the identity provider's stable
@@ -921,8 +993,14 @@ def find_existing_user(provider_name: str, user_id: str, email: str) -> str | No
         if matched:
             return matched
 
-    # Users provisioned by earlier versions of this app carry the subject in `username`.
-    return frappe.db.exists("User", {"username": user_id}) or None
+    if match_by_username:
+        # Users provisioned by earlier versions of this app carry the subject in
+        # `username`. Off by default: the subject claim is not a Frappe username, so a
+        # provider configured to send `preferred_username` could match an unrelated
+        # account that happens to carry that name.
+        return frappe.db.exists("User", {"username": user_id}) or None
+
+    return None
 
 
 def normalize_groups(claim_value) -> list[str]:

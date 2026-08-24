@@ -39,15 +39,29 @@ class TestExistingUserMatching(CallbackTestCase):
 		self.assertLoggedIn("jane@example.com")
 		self.assertEqual(len(self.frappe.user_store.users), 1)
 
-	def test_a_user_provisioned_by_an_older_version_of_this_app_is_still_matched(self):
+	def test_a_user_provisioned_by_an_older_version_is_matched_when_asked_for(self):
+		"""The username leg only: the addresses deliberately differ."""
 		claims = self.id_token_claims()
 		self.frappe.user_store.add(
-			email="jane.old@example.com", username=claims["sub"], enabled=1
+			email="j.doe@example.com", username=claims["sub"], enabled=1
 		)
-		self.run_callback(claims=self.id_token_claims(email="jane.old@example.com"))
+		self.config.match_users_by_username = 1
+		self.run_callback()
 
-		self.assertLoggedIn("jane.old@example.com")
+		self.assertLoggedIn("j.doe@example.com")
 		self.assertEqual(len(self.frappe.user_store.users), 1)
+
+	def test_the_username_leg_is_off_by_default(self):
+		"""The user id claim is not a Frappe username; matching one to the other can
+		hand an unrelated account to whoever the provider calls by that name."""
+		claims = self.id_token_claims()
+		self.frappe.user_store.add(
+			email="j.doe@example.com", username=claims["sub"], enabled=1
+		)
+		self.run_callback()
+
+		self.assertLoggedIn("jane@example.com")
+		self.assertEqual(len(self.frappe.user_store.users), 2)
 
 	def test_the_email_claim_is_matched_case_insensitively(self):
 		self.frappe.user_store.add(email="jane@example.com", enabled=1)
@@ -133,3 +147,64 @@ class TestRequiredClaims(CallbackTestCase):
 
 		self.assertWebPage(http_status_code=400)
 		self.assertNotLoggedIn()
+
+
+class TestVerifiedEmail(CallbackTestCase):
+	"""Users are matched by email, so an unverified one is a way into someone's account."""
+
+	def test_a_login_with_an_unverified_email_is_refused(self):
+		self.frappe.user_store.add(email="jane@example.com", enabled=1)
+		self.run_callback(claims=self.id_token_claims(email_verified=False))
+
+		self.assertWebPage(http_status_code=403)
+		self.assertNotLoggedIn()
+
+	def test_the_claim_is_also_understood_as_a_string(self):
+		self.run_callback(claims=self.id_token_claims(email_verified="false"))
+
+		self.assertWebPage(http_status_code=403)
+		self.assertNotLoggedIn()
+
+	def test_a_verified_email_logs_in(self):
+		self.run_callback(claims=self.id_token_claims(email_verified=True))
+
+		self.assertLoggedIn("jane@example.com")
+
+	def test_a_provider_that_does_not_send_the_claim_is_unaffected(self):
+		self.run_callback()
+
+		self.assertLoggedIn("jane@example.com")
+
+	def test_the_requirement_can_be_turned_off(self):
+		self.config.require_verified_email = 0
+		self.run_callback(claims=self.id_token_claims(email_verified=False))
+
+		self.assertLoggedIn("jane@example.com")
+
+	def test_no_user_is_created_for_an_unverified_email(self):
+		self.run_callback(claims=self.id_token_claims(email_verified=False))
+
+		self.assertEqual(self.frappe.user_store.users, {})
+
+
+class TestSubjectOnRecord(CallbackTestCase):
+	def test_a_changed_subject_replaces_the_one_on_record(self):
+		"""Frappe appends social login rows and reads the first, so a stale subject
+		would stay in charge of every later login and of back-channel logout."""
+		user = self.frappe.user_store.add(email="jane@example.com", enabled=1)
+		user.set_social_login_userid(PROVIDER, userid="the-old-subject")
+
+		self.run_callback()
+
+		rows = [row for row in user.get("social_logins", []) if row.get("provider") == PROVIDER]
+		self.assertEqual(len(rows), 1, "a second row would shadow the new subject")
+		self.assertEqual(rows[0].get("userid"), self.id_token_claims()["sub"])
+
+	def test_an_unchanged_subject_is_left_alone(self):
+		user = self.frappe.user_store.add(email="jane@example.com", enabled=1)
+		user.set_social_login_userid(PROVIDER, userid=self.id_token_claims()["sub"])
+
+		self.run_callback()
+
+		rows = [row for row in user.get("social_logins", []) if row.get("provider") == PROVIDER]
+		self.assertEqual(len(rows), 1)

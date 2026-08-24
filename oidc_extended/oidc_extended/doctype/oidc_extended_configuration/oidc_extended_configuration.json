@@ -17,6 +17,8 @@
   "users_section",
   "user_provisioning",
   "new_user_type",
+  "require_verified_email",
+  "match_users_by_username",
   "verification_section",
   "verify_id_token_signature",
   "jwks_url",
@@ -94,6 +96,20 @@
    "fieldtype": "Link",
    "label": "User Type For New Users",
    "options": "User Type"
+  },
+  {
+   "default": "1",
+   "description": "Refuses a login when the identity provider says the email address has not been verified. Users are matched to Frappe accounts by email address, so an unverified one lets someone who registered another person's address take over their account. Providers that do not send the claim are unaffected.",
+   "fieldname": "require_verified_email",
+   "fieldtype": "Check",
+   "label": "Require A Verified Email Address"
+  },
+  {
+   "default": "0",
+   "description": "Also matches a login to a Frappe user whose username equals the identity provider's user id claim, when nothing else matched. Only needed for users provisioned by versions of this app that stored the claim there: the claim is not a Frappe username, so this can match an unrelated account that happens to carry that name.",
+   "fieldname": "match_users_by_username",
+   "fieldtype": "Check",
+   "label": "Match Users By Username"
   },
   {
    "fieldname": "verification_section",
