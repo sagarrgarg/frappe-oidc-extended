@@ -14,8 +14,10 @@ dependencies = [
 ]
 
 [tool.bench.frappe-dependencies]
-# The callback uses frappe.utils.oauth.consume_oauth_state, which arrived in v15.
-frappe = ">=15.0.0,<=17.0.0-dev"
+# The callback uses frappe.utils.oauth.consume_oauth_state, which arrived in 15.116.0
+# and 16.30.0. A single range cannot exclude 16.0.0 to 16.29.x, so the callback also
+# checks at runtime and says which release is needed.
+frappe = ">=15.116.0,<=17.0.0-dev"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

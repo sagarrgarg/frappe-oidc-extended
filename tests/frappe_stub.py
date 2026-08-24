@@ -109,6 +109,13 @@ class UserStore:
 		self.frappe = frappe_module
 
 	def add(self, **fields):
+		# Child table values may be given as plain dicts for brevity.
+		fields = {
+			key: [row if isinstance(row, FakeDoc) else FakeDoc(row) for row in value]
+			if isinstance(value, list)
+			else value
+			for key, value in fields.items()
+		}
 		doc = FakeDoc(fields, store=self)
 		doc._data.setdefault("name", fields.get("email"))
 		doc._data["__saved"] = True
@@ -137,6 +144,11 @@ class UserStore:
 			for profile in profiles:
 				roles.extend(self.frappe.flags.role_profile_roles.get(profile, []))
 			doc.set("roles", [FakeDoc({"role": r}) for r in dict.fromkeys(roles)])
+
+		if meta.has_field("role_profiles"):
+			# Mirror User.sync_role_profile_name(): the deprecated Link field is kept in
+			# step with the first row of the child table, for the list view.
+			doc.set("role_profile_name", profiles[0] if profiles else None)
 
 		# Mirror User.set_system_user(): the two standard types are derived from whether
 		# any assigned role has desk access; a custom User Type is kept as set.
@@ -170,6 +182,7 @@ def install():
 	frappe = types.ModuleType("frappe")
 
 	# -- exceptions / misc -------------------------------------------------------
+	frappe.__version__ = "15.116.1"
 	frappe.DoesNotExistError = DoesNotExistError
 	frappe.DuplicateEntryError = DuplicateEntryError
 	frappe.ValidationError = ValidationError

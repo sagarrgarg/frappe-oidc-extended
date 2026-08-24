@@ -89,6 +89,23 @@ https://erp.example.com/api/method/oidc_extended.callback.start/<provider name>
 
 It accepts an optional `redirect_to` parameter for where the user should land once logged in, restricted to this site.
 
+#### Supported Frappe versions
+
+| Frappe | Supported |
+| --- | --- |
+| v15 | 15.116.0 and newer |
+| v16 | 16.30.0 and newer |
+| v17 (develop) | expected to work; not released |
+
+Those are the releases in which Frappe replaced the base64 `state` blob with a
+single-use token (`frappe.utils.oauth.consume_oauth_state`). Older releases send a
+`state` that cannot be validated at all, so the app refuses to run on them and says
+which release is needed rather than accepting an unvalidated login.
+
+The role assignment adapts to the running version: v16 holds several role profiles in
+the `role_profiles` Table MultiSelect, v15 holds one in `role_profile_name`, and the
+Priority column decides which profile wins where only one fits.
+
 #### Upgrading
 
 - Users are matched by their social login userid, then by email address, then by `username`. Earlier versions matched by `username` only, which found nobody on a site whose users predate the app.

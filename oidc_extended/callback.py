@@ -10,12 +10,25 @@ import jwt
 import frappe
 import frappe.utils
 from frappe import _ # For translations
-from frappe.utils.oauth import build_oauth_url, consume_oauth_state
+
+
+# Frappe replaced the base64 state blob with a single-use token in v15.116.0 and
+# v16.30.0. Both helpers below arrived with (or before) that change, so their absence
+# is how this app detects a Frappe it cannot safely run on - importing them
+# unguarded would turn that into an ImportError on every request instead.
+try:
+    from frappe.utils.oauth import build_oauth_url, consume_oauth_state
+except ImportError:
+    build_oauth_url = consume_oauth_state = None
+
 from frappe.integrations.doctype.social_login_key.social_login_key import provider_allows_signup
 from frappe.sessions import clear_sessions
 
 frappe.utils.logger.set_log_level("INFO")
 #frappe.utils.logger.set_log_level("DEBUG")
+
+# The releases that carry frappe.utils.oauth.consume_oauth_state.
+MINIMUM_FRAPPE_VERSIONS = "15.116.0 (v15) or 16.30.0 (v16)"
 
 # Values of the "When No Group Matches" setting on OIDC Extended Configuration.
 KEEP_EXISTING_ROLES = "Keep Existing Roles"
@@ -41,6 +54,33 @@ OPENID_CONFIGURATION_CACHE_TTL = 24 * 60 * 60
 # PyJWKClient keeps the fetched keys in memory, so it is worth reusing per worker.
 jwk_clients: dict = {}
 
+def frappe_is_supported() -> bool:
+    """Whether this Frappe carries the OAuth helpers the callback is built on.
+
+    Frappe 15.116.0 and 16.30.0 replaced the base64 `state` blob, which nothing ever
+    validated, with a single-use token held in Redis. Everything older sends the old
+    format and has no way to validate it, so this app refuses to run there rather than
+    reintroducing a `state` that is accepted without being checked.
+    """
+    return consume_oauth_state is not None
+
+
+def respond_unsupported_frappe():
+    frappe.logger().error(
+        f"oidc_extended requires Frappe {MINIMUM_FRAPPE_VERSIONS} or newer; "
+        f"this site runs {frappe.__version__}."
+    )
+    frappe.respond_as_web_page(
+        _("Not Supported"),
+        _("This site runs Frappe {0}. OIDC Extended requires {1} or newer.").format(
+            frappe.__version__, MINIMUM_FRAPPE_VERSIONS
+        ),
+        http_status_code=501,
+        indicator_color="red",
+        success=False,
+    )
+
+
 @frappe.whitelist(allow_guest=True)
 def start(provider: str | None = None, redirect_to: str | None = None):
     """Begins a login with the given provider.
@@ -56,6 +96,10 @@ def start(provider: str | None = None, redirect_to: str | None = None):
     """
     from frappe.utils.oauth import get_oauth2_authorize_url
     from frappe.www.login import sanitize_redirect
+
+    if not frappe_is_supported():
+        respond_unsupported_frappe()
+        return
 
     if not provider:
         request_path_components = frappe.request.path[1:].split("/")
@@ -106,6 +150,10 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
     accepted so that a refusal renders a page rather than a traceback about a missing
     argument.
     """
+
+    if not frappe_is_supported():
+        respond_unsupported_frappe()
+        return
 
     # `state` is the single-use token Frappe generated when this login flow started
     # (see frappe.utils.oauth.create_oauth_state). Consuming it validates the callback
@@ -503,7 +551,7 @@ def get_openid_configuration(social_login_provider, configuration) -> dict:
 
     url = f"{issuer}/.well-known/openid-configuration"
     cache_key = f"oidc_extended|openid_configuration|{url}"
-    cached = frappe.cache().get_value(cache_key)
+    cached = frappe.cache.get_value(cache_key)
 
     if cached:
         return cached
@@ -514,7 +562,7 @@ def get_openid_configuration(social_login_provider, configuration) -> dict:
         frappe.logger().error(f"Could not read the OpenID configuration from {url}: {exception}")
         return {}
 
-    frappe.cache().set_value(cache_key, document, expires_in_sec=OPENID_CONFIGURATION_CACHE_TTL)
+    frappe.cache.set_value(cache_key, document, expires_in_sec=OPENID_CONFIGURATION_CACHE_TTL)
     return document
 
 

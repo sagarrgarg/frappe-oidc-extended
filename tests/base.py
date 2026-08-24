@@ -107,9 +107,13 @@ class CallbackTestCase(unittest.TestCase):
 
 	# -- helpers -------------------------------------------------------------------
 	def use_frappe_v16_user(self):
-		"""Switch the fake User doctype to the v16 layout (role_profiles child table)."""
+		"""Switch the fake User doctype to the v16 layout.
+
+		v16 keeps `role_profile_name` as a hidden field synced from the first row of the
+		`role_profiles` Table MultiSelect, so both fields exist there.
+		"""
 		self.frappe.user_fields.add("role_profiles")
-		self.frappe.user_fields.discard("role_profile_name")
+		self.frappe.__version__ = "16.31.0"
 
 	def add_existing_user(self, **fields):
 		"""An already-provisioned Frappe user, matching the default token claims."""
