@@ -165,7 +165,7 @@ def install():
 	frappe.DoesNotExistError = DoesNotExistError
 	frappe.DuplicateEntryError = DuplicateEntryError
 	frappe.ValidationError = ValidationError
-	frappe.flags = types.SimpleNamespace(role_profile_roles={}, module_profiles={})
+	frappe.flags = types.SimpleNamespace(role_profile_roles={}, module_profiles={}, signup_disabled=False)
 	frappe.session = types.SimpleNamespace(user="Guest")
 	frappe._ = lambda msg, *a, **kw: msg
 	frappe.generate_hash = lambda length=56: "h" * (length or 56)
@@ -384,7 +384,8 @@ def install():
 		doc = frappe.docs.get(("Social Login Key", provider))
 		sign_ups = doc.get("sign_ups") if doc else None
 		if not sign_ups:
-			return not frappe.flags.__dict__.get("signup_disabled", False)
+			# Frappe falls back to the site's website signup setting.
+			return not frappe.flags.signup_disabled
 		return sign_ups == "Allow"
 
 	slk.provider_allows_signup = provider_allows_signup

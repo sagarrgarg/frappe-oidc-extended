@@ -11,6 +11,7 @@ import frappe
 import frappe.utils
 from frappe import _ # For translations
 from frappe.utils.oauth import consume_oauth_state
+from frappe.integrations.doctype.social_login_key.social_login_key import provider_allows_signup
 
 frappe.utils.logger.set_log_level("INFO")
 #frappe.utils.logger.set_log_level("DEBUG")
@@ -23,6 +24,11 @@ DENY_LOGIN = "Deny Login"
 # Frappe's built-in accounts, which must never be taken over by a login from an
 # identity provider (see frappe.core.doctype.user.user.STANDARD_USERS).
 RESERVED_USERS = ("Administrator", "Guest")
+
+# Values of the "User Provisioning" setting on OIDC Extended Configuration.
+USE_SOCIAL_LOGIN_KEY_SETTING = "Use Social Login Key Setting"
+ALWAYS_CREATE_USERS = "Always Create Users"
+NEVER_CREATE_USERS = "Never Create Users"
 
 # Asymmetric algorithms only: an id token is verified against the provider's published
 # keys, and "none" or an unexpected HMAC would let the caller pick the key.
@@ -184,6 +190,20 @@ def custom(code: str, state: str):
         frappe.logger().info(f"The existing user {existing_user_name} fetched successfully.")
         frappe.logger().debug(f"The existing user data: {user.as_dict()}")
     else:
+        if not may_create_user(provider_name, oidc_extended_configuration):
+            frappe.logger().warning(
+                f"Refusing to create a Frappe user for {email}: user provisioning is not "
+                f"allowed for the provider {provider_name}."
+            )
+            frappe.respond_as_web_page(
+                _("Signup is Disabled"),
+                _("You do not have an account on this site, and accounts are not created automatically."),
+                http_status_code=403,
+                indicator_color="red",
+                success=False,
+            )
+            return
+
         # Creates a new user. `username` is deliberately left to Frappe: it derives one
         # and blanks it on collision (User.validate_username), so it cannot be relied
         # on as an identifier.
@@ -275,6 +295,25 @@ def custom(code: str, state: str):
         desk_user=frappe.local.response.get("message") == "Logged In",
         redirect_to=redirect_to or None
     )
+
+def may_create_user(provider_name: str, configuration) -> bool:
+    """Whether a login by someone without a Frappe account may create one.
+
+    This app used to provision users unconditionally, which is defensible when the
+    identity provider decides who may reach the callback at all, but it silently
+    ignored the Sign-ups field of the Social Login Key and the site's website signup
+    setting that Frappe's own social logins honour. It is now a deliberate choice.
+    """
+    provisioning = configuration.get("user_provisioning") or USE_SOCIAL_LOGIN_KEY_SETTING
+
+    if provisioning == ALWAYS_CREATE_USERS:
+        return True
+
+    if provisioning == NEVER_CREATE_USERS:
+        return False
+
+    return bool(provider_allows_signup(provider_name))
+
 
 def get_openid_configuration(social_login_provider, configuration) -> dict:
     """The provider's OpenID discovery document, cached for a day.

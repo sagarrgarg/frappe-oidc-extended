@@ -14,6 +14,8 @@
   "email_claim_name",
   "groups_claim_name",
   "column_break_0",
+  "users_section",
+  "user_provisioning",
   "verification_section",
   "verify_id_token_signature",
   "jwks_url",
@@ -70,6 +72,19 @@
   {
    "fieldname": "column_break_0",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "users_section",
+   "fieldtype": "Section Break",
+   "label": "Users"
+  },
+  {
+   "default": "Use Social Login Key Setting",
+   "description": "Whether a login by someone without a Frappe user account creates one. \"Use Social Login Key Setting\" follows the Sign-ups field of the Social Login Key, falling back to the site's website signup setting, which is what Frappe's own social logins do. \"Always Create Users\" provisions everyone the identity provider lets through, which is only safe when the provider restricts who may reach this callback.",
+   "fieldname": "user_provisioning",
+   "fieldtype": "Select",
+   "label": "User Provisioning",
+   "options": "Use Social Login Key Setting\nAlways Create Users\nNever Create Users"
   },
   {
    "fieldname": "verification_section",
