@@ -55,9 +55,13 @@ class BackchannelLogoutTestCase(CallbackTestCase):
 			[{"user": "jane@example.com", "keep_current": False, "force": True}],
 		)
 
-	def assertRefused(self, result):
-		self.assertEqual(self.frappe.local.response.get("http_status_code"), 400, result)
-		self.assertIn("error", result)
+	def assertRefused(self, result=None):
+		"""The error belongs at the top level of the body, per Back-Channel Logout 2.8."""
+		response = self.frappe.local.response
+		self.assertEqual(response.get("http_status_code"), 400, response)
+		self.assertEqual(response.get("error"), "invalid_request", response)
+		self.assertTrue(response.get("error_description"), response)
+		self.assertIsNone(result, "the error goes on the response, not the return value")
 		self.assertEqual(self.frappe.sessions.cleared, [], "no session should have been ended")
 
 
@@ -175,3 +179,30 @@ class TestBackchannelLogoutConfiguration(BackchannelLogoutTestCase):
 		self.assertRefused(
 			self.post_logout(path="/api/method/oidc_extended.callback.backchannel_logout")
 		)
+
+
+class TestLogoutTokenReplayWindow(BackchannelLogoutTestCase):
+	def test_a_token_stays_usable_when_ending_the_sessions_failed(self):
+		"""Otherwise a transient database error would burn the token and the provider's
+		retry would be refused as a replay, losing the logout for good."""
+		with mock.patch.object(self.callback, "clear_sessions", side_effect=RuntimeError("db is down")):
+			with self.assertRaises(RuntimeError):
+				self.post_logout()
+
+		self.post_logout()
+		self.assertSessionsEnded()
+
+	def test_an_unknown_subject_still_burns_the_token(self):
+		self.post_logout(claims=self.logout_token_claims(sub="someone-else"))
+		self.assertRefused(self.post_logout(claims=self.logout_token_claims(sub="someone-else")))
+
+	def test_the_reason_for_an_unknown_provider_is_not_disclosed(self):
+		"""Which providers exist, and which are half configured, read the same."""
+		self.post_logout(path="/api/method/oidc_extended.callback.backchannel_logout/nope")
+		unknown = self.frappe.local.response.get("error_description")
+
+		self.setUp()
+		del self.frappe.docs[("OIDC Extended Configuration", PROVIDER)]
+		self.post_logout()
+
+		self.assertEqual(self.frappe.local.response.get("error_description"), unknown)

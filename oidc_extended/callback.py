@@ -168,116 +168,138 @@ def backchannel_logout(logout_token: str | None = None):
     Answers 200 when there is nothing to do - an unknown subject is not an error, and
     saying so would tell an unauthenticated caller which subjects exist here.
     """
-    request_path_components = frappe.request.path[1:].split("/")
-
-    if not len(request_path_components) == 4 or not request_path_components[3]:
-        return logout_error("invalid_request", "The logout URL is invalid.")
-
-    provider_name = request_path_components[3]
-
-    if not frappe.db.exists("Social Login Key", provider_name):
-        return logout_error("invalid_request", "Unknown provider.")
-
-    if not frappe.db.exists("OIDC Extended Configuration", provider_name):
-        return logout_error("invalid_request", "The provider has no OIDC Extended Configuration.")
-
-    social_login_provider = frappe.get_doc("Social Login Key", provider_name)
-    oidc_extended_configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider_name)
-
-    if not signature_verification_enabled(oidc_extended_configuration):
-        # The token is the only thing that says this request came from the provider. If
-        # signatures are not checked, anyone who can reach this endpoint could end
-        # anyone's session, so the feature is refused rather than trusted blindly.
-        frappe.logger().error(
-            f"Refusing a back-channel logout for {provider_name}: id token signature "
-            f"verification is turned off, so a logout token cannot be trusted."
-        )
-        return logout_error("invalid_request", "Token verification is disabled for this provider.")
-
-    if not logout_token:
-        return logout_error("invalid_request", "No logout_token was posted.")
-
     try:
-        # A logout token carries iss, aud, iat, jti and a sub and/or sid; it has no exp
-        # (OpenID Connect Back-Channel Logout 1.0, 2.4), so freshness is checked below.
-        claims = verify_token(
-            logout_token,
-            social_login_provider,
-            oidc_extended_configuration,
-            require=("iss", "aud", "iat", "jti"),
-            # PyJWT refuses a token issued in the future; allow for a provider whose
-            # clock runs a little ahead of this server's.
-            leeway=LOGOUT_TOKEN_CLOCK_SKEW,
-        )
-    except Exception as exception:
-        frappe.logger().error(
-            f"A logout token from {provider_name} could not be verified: "
-            f"{type(exception).__name__}: {exception}"
-        )
-        return logout_error("invalid_request", "The logout token could not be verified.")
+        request_path_components = frappe.request.path[1:].split("/")
 
-    error = validate_logout_claims(claims, provider_name)
+        if not len(request_path_components) == 4 or not request_path_components[3]:
+            raise LogoutTokenError("The logout URL is invalid.")
 
-    if error:
-        return error
+        provider_name = request_path_components[3]
+
+        # One message for both: which providers exist, and which are half configured, is
+        # not something an unauthenticated caller needs to learn.
+        if not frappe.db.exists("Social Login Key", provider_name):
+            frappe.logger().error(f"A back-channel logout named the unknown provider {provider_name}.")
+            raise LogoutTokenError("Unknown provider.")
+
+        if not frappe.db.exists("OIDC Extended Configuration", provider_name):
+            frappe.logger().error(f"The provider {provider_name} has no OIDC Extended Configuration.")
+            raise LogoutTokenError("Unknown provider.")
+
+        social_login_provider = frappe.get_doc("Social Login Key", provider_name)
+        oidc_extended_configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider_name)
+
+        if not signature_verification_enabled(oidc_extended_configuration):
+            # The token is the only thing that says this request came from the provider.
+            # If signatures are not checked, anyone who can reach this endpoint could end
+            # anyone's session, so the feature is refused rather than trusted blindly.
+            frappe.logger().error(
+                f"Refusing a back-channel logout for {provider_name}: id token signature "
+                f"verification is turned off, so a logout token cannot be trusted."
+            )
+            raise LogoutTokenError("Token verification is disabled for this provider.")
+
+        if not logout_token:
+            raise LogoutTokenError("No logout_token was posted.")
+
+        try:
+            # A logout token carries iss, aud, iat, jti and a sub and/or sid; it has no
+            # exp (Back-Channel Logout 1.0, 2.4), so freshness is checked separately.
+            claims = verify_token(
+                logout_token,
+                social_login_provider,
+                oidc_extended_configuration,
+                require=("iss", "aud", "iat", "jti"),
+                # PyJWT refuses a token issued in the future; allow for a provider whose
+                # clock runs a little ahead of this server's.
+                leeway=LOGOUT_TOKEN_CLOCK_SKEW,
+            )
+        except Exception as exception:
+            frappe.logger().error(
+                f"A logout token from {provider_name} could not be verified: "
+                f"{type(exception).__name__}: {exception}"
+            )
+            raise LogoutTokenError("The logout token could not be verified.")
+
+        validate_logout_claims(claims, provider_name)
+    except LogoutTokenError as exception:
+        return logout_error(str(exception))
 
     user_name = frappe.db.get_value(
         "User Social Login", {"provider": provider_name, "userid": claims.get("sub")}, "parent"
     )
 
-    if not user_name:
+    if user_name:
+        frappe.logger().info(f"Ending the sessions of {user_name}: {provider_name} logged them out.")
+        clear_sessions(user=user_name, force=True)
+        frappe.clear_cache(user=user_name)
+        frappe.db.commit()
+    else:
         frappe.logger().info(
             f"A back-channel logout from {provider_name} named a subject with no user here."
         )
-        return
 
-    frappe.logger().info(f"Ending the sessions of {user_name}: {provider_name} logged them out.")
-    clear_sessions(user=user_name, force=True)
-    frappe.clear_cache(user=user_name)
-    frappe.db.commit()
+    # Only now: a token whose sessions could not be ended - a database error, say - must
+    # stay usable, so that the provider's retry is not refused as a replay.
+    remember_logout_token(provider_name, claims.get("jti"))
 
 
-def validate_logout_claims(claims: dict, provider_name: str) -> dict | None:
-    """Checks the claims a logout token must carry. Returns an error to answer with."""
+class LogoutTokenError(Exception):
+    """A logout token that will not be acted on."""
+
+
+def validate_logout_claims(claims: dict, provider_name: str):
+    """Checks the claims a logout token must carry, raising on the first that fails."""
     events = claims.get("events")
 
     if not isinstance(events, dict) or BACKCHANNEL_LOGOUT_EVENT not in events:
         # Without this a token issued for another purpose - an id token, say - would be
         # accepted as a logout instruction (Back-Channel Logout 1.0, 2.6).
-        return logout_error("invalid_request", "The token is not a back-channel logout token.")
+        raise LogoutTokenError("The token is not a back-channel logout token.")
 
     if "nonce" in claims:
         # A logout token must not carry a nonce; one that does is an id token replayed.
-        return logout_error("invalid_request", "A logout token must not contain a nonce.")
+        raise LogoutTokenError("A logout token must not contain a nonce.")
 
     if not claims.get("sub"):
         # This app matches users by the subject; a token carrying only `sid` names a
         # session at the provider that was never recorded here.
-        return logout_error("invalid_request", "The logout token has no sub claim.")
+        raise LogoutTokenError("The logout token has no sub claim.")
 
-    issued_at = claims.get("iat")
     # `iat` is seconds since the epoch in UTC. time.time() is the same scale;
     # frappe.utils.now_datetime() is the site's timezone and would be read back as the
     # server's, skewing this by the offset between them.
-    age = time.time() - float(issued_at)
+    age = time.time() - float(claims.get("iat"))
 
     if age > LOGOUT_TOKEN_MAX_AGE or age < -LOGOUT_TOKEN_CLOCK_SKEW:
-        return logout_error("invalid_request", "The logout token is not fresh.")
+        raise LogoutTokenError("The logout token is not fresh.")
 
-    replay_key = f"oidc_extended|logout_token|{provider_name}|{claims.get('jti')}"
-
-    if frappe.cache.get_value(replay_key):
+    if frappe.cache.get_value(logout_token_key(provider_name, claims.get("jti"))):
         frappe.logger().warning(f"A logout token from {provider_name} was replayed.")
-        return logout_error("invalid_request", "This logout token has already been used.")
-
-    frappe.cache.set_value(replay_key, 1, expires_in_sec=LOGOUT_TOKEN_REPLAY_TTL)
-    return None
+        raise LogoutTokenError("This logout token has already been used.")
 
 
-def logout_error(error: str, description: str) -> dict:
-    """The error body of a back-channel logout (Back-Channel Logout 1.0, 2.8)."""
+def logout_token_key(provider_name: str, token_id: str) -> str:
+    return f"oidc_extended|logout_token|{provider_name}|{token_id}"
+
+
+def remember_logout_token(provider_name: str, token_id: str):
+    """Records a logout token as used, for as long as one could still be replayed."""
+    frappe.cache.set_value(
+        logout_token_key(provider_name, token_id), 1, expires_in_sec=LOGOUT_TOKEN_REPLAY_TTL
+    )
+
+
+def logout_error(description: str):
+    """The error body of a back-channel logout (Back-Channel Logout 1.0, 2.8).
+
+    Written onto the response rather than returned, so that `error` and
+    `error_description` are at the top level of the body instead of nested under the
+    `message` key Frappe wraps a return value in.
+    """
     frappe.local.response["http_status_code"] = 400
-    return {"error": error, "error_description": description}
+    frappe.local.response["error"] = "invalid_request"
+    frappe.local.response["error_description"] = description
 
 
 @frappe.whitelist(allow_guest=True)
