@@ -42,6 +42,56 @@ OPENID_CONFIGURATION_CACHE_TTL = 24 * 60 * 60
 jwk_clients: dict = {}
 
 @frappe.whitelist(allow_guest=True)
+def start(provider: str | None = None, redirect_to: str | None = None):
+    """Begins a login with the given provider.
+
+    URL: /api/method/oidc_extended.callback.start/<provider name>
+
+    Frappe has no whitelisted endpoint that starts a social login: the authorize URL
+    is only ever rendered into the login page, so a link that should take someone
+    straight to the identity provider - an application tile in the provider's own
+    dashboard, for instance - has nowhere to point. This is that entry point. It
+    builds the same authorize URL the login page would, which means the single-use
+    state that `custom` consumes is created here as well.
+    """
+    from frappe.utils.oauth import get_oauth2_authorize_url
+    from frappe.www.login import sanitize_redirect
+
+    if not provider:
+        request_path_components = frappe.request.path[1:].split("/")
+
+        if len(request_path_components) == 4 and request_path_components[3]:
+            provider = request_path_components[3]
+
+    if not provider or not frappe.db.exists("Social Login Key", provider):
+        frappe.respond_as_web_page(
+            _("Unknown Provider"),
+            _("There is no Social Login Key named {0} on this site.").format(provider),
+            http_status_code=404,
+            indicator_color="red",
+            success=False,
+        )
+        return
+
+    # get_oauth2_providers() lists every Social Login Key, disabled ones included, so
+    # this has to be checked here rather than left to the authorize URL to fail on.
+    if not frappe.db.get_value("Social Login Key", provider, "enable_social_login"):
+        frappe.respond_as_web_page(
+            _("Not Allowed"),
+            _("Login through {0} is disabled on this site.").format(provider),
+            http_status_code=403,
+            indicator_color="orange",
+            success=False,
+        )
+        return
+
+    frappe.local.response["type"] = "redirect"
+    # sanitize_redirect keeps `redirect_to` on this site: it is a parameter of a
+    # guest-facing URL that decides where the user lands once they are logged in.
+    frappe.local.response["location"] = get_oauth2_authorize_url(provider, sanitize_redirect(redirect_to))
+
+
+@frappe.whitelist(allow_guest=True)
 def custom(code: str | None = None, state: str | None = None, error: str | None = None, error_description: str | None = None):
     """Callback for processing the request received after a successful authentication in an identity provider (OIDC provider).
 

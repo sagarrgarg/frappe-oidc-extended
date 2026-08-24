@@ -209,7 +209,10 @@ def install():
 	frappe.respond_as_web_page = respond_as_web_page
 
 	# -- request / response / session -------------------------------------------
-	frappe.request = types.SimpleNamespace(path="/api/method/oidc_extended.callback.custom/authentik")
+	frappe.request = types.SimpleNamespace(
+		path="/api/method/oidc_extended.callback.custom/authentik",
+		url="https://erp.example.com/api/method/oidc_extended.callback.custom/authentik",
+	)
 
 	class _LoginManager:
 		def __init__(self):
@@ -391,6 +394,24 @@ def install():
 	oauth.get_oauth2_authorize_url = get_oauth2_authorize_url
 	frappe.utils.oauth = oauth
 
+	# -- frappe.www.login --------------------------------------------------------
+	www = types.ModuleType("frappe.www")
+	login = types.ModuleType("frappe.www.login")
+
+	def sanitize_redirect(redirect):
+		"""Same-site redirects only, as frappe.www.login.sanitize_redirect does."""
+		from urllib.parse import urlparse
+
+		if not redirect:
+			return redirect
+
+		parsed = urlparse(redirect)
+		if parsed.netloc and parsed.netloc != urlparse(frappe.request.url).netloc:
+			return "/app"
+		return parsed.path or "/app"
+
+	login.sanitize_redirect = sanitize_redirect
+
 	# -- frappe.sessions ---------------------------------------------------------
 	sessions = types.ModuleType("frappe.sessions")
 	sessions.cleared = []
@@ -421,6 +442,8 @@ def install():
 		("frappe.utils", utils),
 		("frappe.utils.oauth", oauth),
 		("frappe.sessions", sessions),
+		("frappe.www", www),
+		("frappe.www.login", login),
 		("frappe.integrations", integrations),
 		("frappe.integrations.doctype", int_doctype),
 		("frappe.integrations.doctype.social_login_key", slk_pkg),
