@@ -10,7 +10,7 @@ import jwt
 import frappe
 import frappe.utils
 from frappe import _ # For translations
-from frappe.utils.oauth import consume_oauth_state
+from frappe.utils.oauth import build_oauth_url, consume_oauth_state
 from frappe.integrations.doctype.social_login_key.social_login_key import provider_allows_signup
 from frappe.sessions import clear_sessions
 
@@ -42,7 +42,7 @@ OPENID_CONFIGURATION_CACHE_TTL = 24 * 60 * 60
 jwk_clients: dict = {}
 
 @frappe.whitelist(allow_guest=True)
-def custom(code: str, state: str):
+def custom(code: str | None = None, state: str | None = None, error: str | None = None, error_description: str | None = None):
     """Callback for processing the request received after a successful authentication in an identity provider (OIDC provider).
 
     OIDC redirect URL: /api/method/oidc_extended.callback.custom/<provider name>
@@ -50,6 +50,11 @@ def custom(code: str, state: str):
     This extends the functionality of the current Social Login (OIDC) module. In addition to handling the authentication over OIDC, this:
     - Creates new user if does not exsit.
     - Maps groups from the claim of id token to ERPNext roles.
+
+    `error` and `error_description` are the parameters an identity provider sends
+    instead of `code` when it refuses the authorization (RFC 6749 4.1.2.1). They are
+    accepted so that a refusal renders a page rather than a traceback about a missing
+    argument.
     """
 
     # `state` is the single-use token Frappe generated when this login flow started
@@ -67,6 +72,29 @@ def custom(code: str, state: str):
         )
         return
 
+    if error:
+        # The identity provider refused the authorization instead of issuing a code.
+        frappe.logger().warning(f"The identity provider returned an error: {error} ({error_description})")
+        frappe.respond_as_web_page(
+            _("Login Failed"),
+            _("The identity provider refused the login: {0}").format(error_description or error),
+            http_status_code=400,
+            indicator_color="red",
+            success=False,
+            primary_action="/login",
+            primary_label="Go to Standard Login",
+        )
+        return
+
+    if not code:
+        frappe.respond_as_web_page(
+            _("Invalid Request"),
+            _("The identity provider did not return an authorization code."),
+            http_status_code=400,
+            indicator_color="red",
+        )
+        return
+
     request_path_components = frappe.request.path[1:].split("/")
 
     if not len(request_path_components) == 4 or not request_path_components[3]:
@@ -76,33 +104,62 @@ def custom(code: str, state: str):
     # Gets the name of the OIDC custom provider.
     provider_name = request_path_components[3]
 
-    # Gets the document of the default Social Login (OIDC) configuration.
-    social_login_provider = frappe.get_doc("Social Login Key", frappe.get_conf().get("custom", provider_name))
+    # Gets the document of the default Social Login (OIDC) configuration. The provider
+    # name comes from the redirect URL, so it is checked rather than trusted.
+    if not frappe.db.exists("Social Login Key", provider_name):
+        frappe.logger().error(f"No Social Login Key named {provider_name} exists.")
+        frappe.respond_as_web_page(
+            _("Unknown Provider"),
+            _("There is no Social Login Key named {0} on this site.").format(provider_name),
+            http_status_code=404,
+            indicator_color="red",
+            success=False,
+        )
+        return
+
+    social_login_provider = frappe.get_doc("Social Login Key", provider_name)
+
+    if not social_login_provider.enable_social_login:
+        frappe.logger().warning(f"The Social Login Key {provider_name} is disabled.")
+        frappe.respond_as_web_page(
+            _("Not Allowed"),
+            _("Login through {0} is disabled on this site.").format(provider_name),
+            http_status_code=403,
+            indicator_color="orange",
+            success=False,
+        )
+        return
+
     user_id_claim_name = social_login_provider.user_id_property or "sub"
 
     # Gets the document of the extended OIDC configuration.
+    if not frappe.db.exists("OIDC Extended Configuration", provider_name):
+        frappe.logger().error(f"No OIDC Extended Configuration exists for the provider {provider_name}.")
+        frappe.respond_as_web_page(
+            _("Not Configured"),
+            _("The provider {0} has no OIDC Extended Configuration. Create one to map its groups to roles.").format(
+                provider_name
+            ),
+            http_status_code=501,
+            indicator_color="red",
+            success=False,
+        )
+        return
+
     oidc_extended_configuration = frappe.get_cached_doc('OIDC Extended Configuration', provider_name)
     given_name_claim_name = oidc_extended_configuration.given_name_claim_name or "given_name"
     family_name_claim_name = oidc_extended_configuration.family_name_claim_name or "family_name"
     email_claim_name = oidc_extended_configuration.email_claim_name or "email"
     groups_claim_name = oidc_extended_configuration.groups_claim_name or "groups"
 
-    token_request_data = {
-        "grant_type": "authorization_code",
-        "client_id": social_login_provider.client_id,
-        "client_secret": social_login_provider.get_password("client_secret"),
-        "scope": json.loads(social_login_provider.auth_url_data).get("scope"),
-        "code": code,
-        "redirect_uri": frappe.utils.get_url(social_login_provider.redirect_url), # Combines ERPNext URL with redirect URL.
-    }
-
     # Requests token from token endpoint.
-    token_response = requests.post(
-        url=social_login_provider.base_url + social_login_provider.access_token_url,
-        data=token_request_data,
-    ).json()
+    encoded_id_token = request_id_token(social_login_provider, code)
 
-    id_token = decode_id_token(token_response["id_token"], social_login_provider, oidc_extended_configuration)
+    if encoded_id_token is None:
+        # request_id_token has already answered the request.
+        return
+
+    id_token = decode_id_token(encoded_id_token, social_login_provider, oidc_extended_configuration)
 
     if id_token is None:
         # decode_id_token has already answered the request.
@@ -308,6 +365,60 @@ def custom(code: str, state: str):
         desk_user=frappe.local.response.get("message") == "Logged In",
         redirect_to=redirect_to or None
     )
+
+def request_id_token(social_login_provider, code: str) -> str | None:
+    """Exchanges the authorization code for the id token of the token response.
+
+    Returns None, after answering the request, when the token endpoint cannot be
+    reached, refuses the exchange or returns no id token. Reading the response
+    unconditionally as `token_response["id_token"]` turned every one of those into a
+    traceback on a guest-facing page.
+    """
+    url = build_oauth_url(social_login_provider.base_url, social_login_provider.access_token_url)
+    auth_url_data = json.loads(social_login_provider.auth_url_data or "{}")
+
+    token_request_data = {
+        "grant_type": "authorization_code",
+        "client_id": social_login_provider.client_id,
+        "client_secret": social_login_provider.get_password("client_secret"),
+        "scope": auth_url_data.get("scope"),
+        "code": code,
+        "redirect_uri": frappe.utils.get_url(social_login_provider.redirect_url), # Combines ERPNext URL with redirect URL.
+    }
+
+    try:
+        response = requests.post(url=url, data=token_request_data, timeout=30)
+        token_response = response.json()
+    except Exception as exception:
+        frappe.logger().error(f"The token endpoint {url} could not be reached: {exception}")
+        frappe.respond_as_web_page(
+            _("Login Failed"),
+            _("The identity provider could not be reached. Please try again."),
+            http_status_code=502,
+            indicator_color="red",
+            success=False,
+        )
+        return None
+
+    if not isinstance(token_response, dict) or not token_response.get("id_token"):
+        # The error fields of a failed exchange are defined in RFC 6749 5.2, and are
+        # what tells a misconfigured client id or redirect URI from a network problem.
+        error = ""
+        if isinstance(token_response, dict):
+            error = f"{token_response.get('error')}: {token_response.get('error_description')}"
+
+        frappe.logger().error(f"The token endpoint {url} returned no id token. {error}")
+        frappe.respond_as_web_page(
+            _("Login Failed"),
+            _("The identity provider did not return an id token. Please try again."),
+            http_status_code=502,
+            indicator_color="red",
+            success=False,
+        )
+        return None
+
+    return token_response["id_token"]
+
 
 def may_create_user(provider_name: str, configuration) -> bool:
     """Whether a login by someone without a Frappe account may create one.

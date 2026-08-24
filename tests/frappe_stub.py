@@ -367,6 +367,17 @@ def install():
 		frappe.cache.delete_value(key)
 		return redirect_to
 
+	def build_oauth_url(base_url, url=None):
+		from urllib.parse import urlparse
+
+		if url is None:
+			return base_url
+		parsed = urlparse(url)
+		if not (parsed.scheme and parsed.netloc):
+			return base_url + url
+		return url
+
+	oauth.build_oauth_url = build_oauth_url
 	oauth.create_oauth_state = create_oauth_state
 	oauth.consume_oauth_state = consume_oauth_state
 	oauth.authorize_urls = []
