@@ -25,6 +25,7 @@ except ImportError:
 
 from frappe.integrations.doctype.social_login_key.social_login_key import provider_allows_signup
 from frappe.sessions import clear_sessions
+from frappe.rate_limiter import rate_limit
 
 # This module deliberately does not call frappe.utils.logger.set_log_level(): it sets
 # frappe.log_level and clears frappe.loggers for the whole worker process, so importing
@@ -104,7 +105,7 @@ def respond_unsupported_frappe():
 
 
 @frappe.whitelist(allow_guest=True)
-@frappe.rate_limit(limit=LOGIN_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
+@rate_limit(limit=LOGIN_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
 def start(provider: str | None = None, redirect_to: str | None = None):
     """Begins a login with the given provider.
 
@@ -159,7 +160,7 @@ def start(provider: str | None = None, redirect_to: str | None = None):
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
-@frappe.rate_limit(limit=LOGOUT_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
+@rate_limit(limit=LOGOUT_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
 def backchannel_logout(logout_token: str | None = None):
     """Ends the Frappe sessions of a user the identity provider has logged out.
 
@@ -315,7 +316,7 @@ def logout_error(description: str):
 
 
 @frappe.whitelist(allow_guest=True)
-@frappe.rate_limit(limit=LOGIN_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
+@rate_limit(limit=LOGIN_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
 def custom(code: str | None = None, state: str | None = None, error: str | None = None, error_description: str | None = None):
     """Callback for processing the request received after a successful authentication in an identity provider (OIDC provider).
 

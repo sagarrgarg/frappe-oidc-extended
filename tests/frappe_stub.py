@@ -209,16 +209,7 @@ def install():
 
 	frappe.whitelist = whitelist
 
-	def rate_limit(key=None, limit=5, seconds=24 * 60 * 60, methods="ALL", ip_based=True):
-		"""Records the declared limit; the counting itself is Frappe's, not ours."""
-
-		def decorator(fn):
-			fn.rate_limit = {"limit": limit, "seconds": seconds, "ip_based": ip_based}
-			return fn
-
-		return decorator
-
-	frappe.rate_limit = rate_limit
+	# frappe.rate_limiter.rate_limit - it is NOT an attribute of the frappe module.
 	frappe.msgprint = lambda *a, **kw: None
 
 	logger, logger_calls = _make_logger()
@@ -454,6 +445,21 @@ def install():
 
 	login.sanitize_redirect = sanitize_redirect
 
+	# -- frappe.rate_limiter -----------------------------------------------------
+	rate_limiter = types.ModuleType("frappe.rate_limiter")
+
+	def rate_limit(key=None, limit=5, seconds=24 * 60 * 60, methods="ALL", ip_based=True):
+		"""Records the declared limit; the counting itself is Frappe's, not ours."""
+
+		def decorator(fn):
+			fn.rate_limit = {"limit": limit, "seconds": seconds, "ip_based": ip_based}
+			return fn
+
+		return decorator
+
+	rate_limiter.rate_limit = rate_limit
+	frappe.rate_limiter = rate_limiter
+
 	# -- frappe.sessions ---------------------------------------------------------
 	sessions = types.ModuleType("frappe.sessions")
 	sessions.cleared = []
@@ -484,6 +490,7 @@ def install():
 		("frappe.utils", utils),
 		("frappe.utils.oauth", oauth),
 		("frappe.sessions", sessions),
+		("frappe.rate_limiter", rate_limiter),
 		("frappe.www", www),
 		("frappe.www.login", login),
 		("frappe.integrations", integrations),
