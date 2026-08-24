@@ -12,6 +12,7 @@ import frappe.utils
 from frappe import _ # For translations
 from frappe.utils.oauth import consume_oauth_state
 from frappe.integrations.doctype.social_login_key.social_login_key import provider_allows_signup
+from frappe.sessions import clear_sessions
 
 frappe.utils.logger.set_log_level("INFO")
 #frappe.utils.logger.set_log_level("DEBUG")
@@ -285,9 +286,18 @@ def custom(code: str, state: str):
     user.save()
 
     if role_profiles_changed:
-        frappe.logger().info(f"Role profiles changed for {email}. Clearing active sessions to enforce new permissions instantly.")
-        frappe.cache().hdel("sessions", user.name)
-        frappe.cache().hdel("bhas_role", user.name)
+        frappe.logger().info(
+            f"Role profiles changed for {email}. Clearing active sessions to enforce the new "
+            f"permissions instantly."
+        )
+        # The previous frappe.cache().hdel("sessions", ...) and hdel("bhas_role", ...) calls
+        # cleared nothing: Frappe keeps sessions in a hash named "session" keyed by sid, not
+        # by user, and no cache named "bhas_role" exists. A user whose roles were reduced
+        # kept the old ones in every browser tab they already had open.
+        frappe.clear_cache(user=user.name)
+        # keep_current: the current session is still the guest one that is about to be
+        # replaced by post_login below. force: ignore the simultaneous session allowance.
+        clear_sessions(user=user.name, keep_current=True, force=True)
 
     frappe.local.login_manager.user = user.name
     frappe.local.login_manager.post_login()
