@@ -272,6 +272,28 @@ provider on a schedule, under **Reconciliation** on the configuration:
 | Service Account Client ID / Secret | Keycloak: a client with client authentication and service account roles on, whose service account holds `view-users` from realm-management. |
 | API Token | authentik: an API token. authentik users are matched by email, since what it puts in `sub` depends on the provider's subject mode. |
 
+**For a change to land at once rather than at the next run**, Keycloak can call the
+webhook endpoint:
+
+```
+https://erp.example.com/api/method/oidc_extended.reconciliation.webhook/<provider name>
+```
+
+Keycloak has no webhook of its own - it has an event listener SPI, and community
+providers built on it (p2-inc/keycloak-events, vymalo/keycloak-webhook and others) send
+admin events over HTTP once their JAR is deployed into the server. Point one at that URL
+for `USER` and `GROUP_MEMBERSHIP` admin events. On a managed Keycloak such as the one
+inside Nubus, check first that a provider JAR survives app updates.
+
+Nothing in the body is trusted beyond an identifier: whatever user id or email address
+the payload names is looked up in the directory through the admin API, and what the
+directory says is what gets applied. A forged call can at most ask for a user to be
+re-checked against the truth. The call must present the **Webhook Secret** as a bearer
+token or sign the body with it (HMAC-SHA256, `X-Hub-Signature-256`); without a secret
+configured the endpoint is closed. A payload naming a user this site does not have is
+answered exactly like one that does, so the endpoint cannot be used to find out who is
+here.
+
 Group changes are applied the same way, which is what closes the other half of the gap:
 a user removed from a mapped group has their role profiles recomputed and their
 sessions ended, without waiting for a login that may never come.

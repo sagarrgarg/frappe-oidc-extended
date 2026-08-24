@@ -39,6 +39,7 @@
   "directory_client_id",
   "directory_client_secret",
   "directory_api_token",
+  "webhook_secret",
   "last_reconciled_on"
  ],
  "fields": [
@@ -255,6 +256,13 @@
    "depends_on": "eval:doc.directory_type == 'Authentik'",
    "label": "API Token",
    "description": "authentik matches users by email address: what it puts in `sub` depends on the provider's subject mode."
+  },
+  {
+   "depends_on": "eval:doc.enable_reconciliation",
+   "description": "Shared secret for the webhook endpoint at /api/method/oidc_extended.reconciliation.webhook/&lt;provider&gt;. Keycloak has no webhook of its own; an event listener provider deployed into it can call this whenever a user or a group membership changes, and the user is then re-checked against the directory at once instead of waiting for the next scheduled run. The call must present the secret as a bearer token or sign the body with it (HMAC-SHA256). Without a secret the endpoint is closed.",
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret"
   },
   {
    "fieldname": "last_reconciled_on",

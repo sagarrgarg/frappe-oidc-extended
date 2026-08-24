@@ -49,6 +49,9 @@ class Directory:
 	def get_users(self) -> list[dict]:
 		raise NotImplementedError
 
+	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
+		raise NotImplementedError
+
 	def get(self, url, **kwargs):
 		response = requests.get(url, timeout=30, **kwargs)
 		response.raise_for_status()
@@ -120,6 +123,39 @@ class KeycloakDirectory(Directory):
 		return users
 
 
+	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
+		"""One user, for acting on a single change rather than sweeping everyone."""
+		headers = {"Authorization": f"Bearer {self.get_token()}"}
+
+		try:
+			if subject:
+				entry = self.get(f"{self.admin_url}/users/{subject}", headers=headers)
+			elif email:
+				matches = self.get(
+					f"{self.admin_url}/users", headers=headers, params={"email": email, "exact": True}
+				)
+				entry = matches[0] if matches else None
+			else:
+				return None
+		except requests.HTTPError as exception:
+			if exception.response is not None and exception.response.status_code == 404:
+				# Deleted at the provider, which is a fact worth acting on.
+				return None
+			raise
+
+		if not entry:
+			return None
+
+		groups = self.get(f"{self.admin_url}/users/{entry['id']}/groups", headers=headers)
+
+		return {
+			"subject": entry.get("id"),
+			"email": (entry.get("email") or "").strip().lower(),
+			"enabled": bool(entry.get("enabled")),
+			"groups": [group.get("path") or group.get("name") for group in groups],
+		}
+
+
 class AuthentikDirectory(Directory):
 	"""authentik's API, reached with a token.
 
@@ -158,3 +194,23 @@ class AuthentikDirectory(Directory):
 			page += 1
 
 		return users
+
+	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
+		if not email:
+			return None
+
+		headers = {"Authorization": f"Bearer {self.configuration.get_password('directory_api_token')}"}
+		result = self.get(
+			f"{self.url}/api/v3/core/users/", headers=headers, params={"email": email}
+		)
+
+		for entry in result.get("results") or []:
+			if (entry.get("email") or "").strip().lower() == email.strip().lower():
+				return {
+					"subject": None,
+					"email": email.strip().lower(),
+					"enabled": bool(entry.get("is_active")),
+					"groups": [g.get("name") for g in entry.get("groups_obj") or [] if g.get("name")],
+				}
+
+		return None

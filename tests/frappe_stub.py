@@ -225,9 +225,12 @@ def install():
 	frappe.respond_as_web_page = respond_as_web_page
 
 	# -- request / response / session -------------------------------------------
+	frappe.request_headers = {}
+	frappe.get_request_header = lambda key, default=None: frappe.request_headers.get(key, default)
 	frappe.request = types.SimpleNamespace(
 		path="/api/method/oidc_extended.callback.custom/authentik",
 		url="https://erp.example.com/api/method/oidc_extended.callback.custom/authentik",
+		get_data=lambda: b"",
 	)
 
 	class _LoginManager:
@@ -338,11 +341,13 @@ def install():
 
 		def get_value(self, doctype, name, fieldname=None, **kwargs):
 			if doctype == "User Social Login" and isinstance(name, dict):
-				# Child table lookup: returns the parent User, as Frappe does.
+				# Child table lookup: returns the parent User, as Frappe does. `parent`
+				# is a real column on a child table, so it is filterable too.
 				for user_name, user in frappe.user_store.users.items():
 					for row in user.get("social_logins", []):
-						if all(row.get(k) == v for k, v in name.items()):
-							return user_name if fieldname == "parent" else row.get(fieldname)
+						values = {**row.as_dict(), "parent": user_name}
+						if all(values.get(k) == v for k, v in name.items()):
+							return user_name if fieldname == "parent" else values.get(fieldname)
 				return None
 
 			doc = frappe.docs.get((doctype, name))
