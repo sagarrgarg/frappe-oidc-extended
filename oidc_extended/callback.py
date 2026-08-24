@@ -56,6 +56,15 @@ OPENID_CONFIGURATION_CACHE_TTL = 24 * 60 * 60
 # PyJWKClient keeps the fetched keys in memory, so it is worth reusing per worker.
 jwk_clients: dict = {}
 
+# Rate limits, per IP per minute. Deliberately generous: they are there to stop an
+# unauthenticated caller hammering endpoints that verify signatures, not to police
+# normal use. A whole office arrives at one NAT address, so a tight limit on the login
+# endpoints would lock everyone out at nine in the morning; and revoking every session
+# at the identity provider sends one logout token per user, all at once.
+LOGIN_RATE_LIMIT = 120
+LOGOUT_RATE_LIMIT = 600
+RATE_LIMIT_WINDOW = 60
+
 # OpenID Connect Back-Channel Logout 1.0.
 BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
 
@@ -94,6 +103,7 @@ def respond_unsupported_frappe():
 
 
 @frappe.whitelist(allow_guest=True)
+@frappe.rate_limit(limit=LOGIN_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
 def start(provider: str | None = None, redirect_to: str | None = None):
     """Begins a login with the given provider.
 
@@ -148,6 +158,7 @@ def start(provider: str | None = None, redirect_to: str | None = None):
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
+@frappe.rate_limit(limit=LOGOUT_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
 def backchannel_logout(logout_token: str | None = None):
     """Ends the Frappe sessions of a user the identity provider has logged out.
 
@@ -303,6 +314,7 @@ def logout_error(description: str):
 
 
 @frappe.whitelist(allow_guest=True)
+@frappe.rate_limit(limit=LOGIN_RATE_LIMIT, seconds=RATE_LIMIT_WINDOW)
 def custom(code: str | None = None, state: str | None = None, error: str | None = None, error_description: str | None = None):
     """Callback for processing the request received after a successful authentication in an identity provider (OIDC provider).
 

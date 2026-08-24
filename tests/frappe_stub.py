@@ -208,6 +208,17 @@ def install():
 		return decorator
 
 	frappe.whitelist = whitelist
+
+	def rate_limit(key=None, limit=5, seconds=24 * 60 * 60, methods="ALL", ip_based=True):
+		"""Records the declared limit; the counting itself is Frappe's, not ours."""
+
+		def decorator(fn):
+			fn.rate_limit = {"limit": limit, "seconds": seconds, "ip_based": ip_based}
+			return fn
+
+		return decorator
+
+	frappe.rate_limit = rate_limit
 	frappe.msgprint = lambda *a, **kw: None
 
 	logger, logger_calls = _make_logger()
