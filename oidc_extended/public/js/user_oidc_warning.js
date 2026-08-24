@@ -1,46 +1,36 @@
+// Warns that this user's roles are managed by the identity provider, and locks the
+// fields this app writes on their behalf.
+//
+// The fields differ by Frappe version - v15 stores a single role profile in
+// `role_profile_name`, v16 holds several in the `role_profiles` table - so whichever
+// exists on this site is the one locked. Locking is done with read_only rather than
+// CSS: a rule injected into the document head applies to every form the user opens
+// afterwards, and one that only greys a field out does not stop the value being saved.
+
 frappe.ui.form.on("User", {
 	refresh(frm) {
 		if (frm.doc.name === "Administrator") return;
 
-		// Inject pure CSS to force elements to be locked or hidden.
-		// Since Frappe redraws the DOM and checkboxes asynchronously, standard JS UI operations fail.
-		if (!document.getElementById("oidc-user-lock-css")) {
-			$(`<style id="oidc-user-lock-css">
-				/* Lock the profile fields */
-				div[data-fieldname="role_profiles"],
-				div[data-fieldname="module_profile"] {
-					pointer-events: none !important;
-					opacity: 0.6 !important;
-					user-select: none !important;
-				}
-				
-				/* Permanently hide the Select All / Unselect All buttons */
-				.bulk-select-options,
-				button.select-all,
-				button.deselect-all {
-					display: none !important;
-					visibility: hidden !important;
-					pointer-events: none !important;
-				}
-			</style>`).appendTo("head");
-		}
+		// Every user carries a "frappe" social login row; anything else came from an
+		// identity provider. Users who have never signed in through one are not managed
+		// by this app and should be left alone.
+		const managed_by_provider = (frm.doc.social_logins || []).some(
+			(row) => row.provider && row.provider !== "frappe"
+		);
 
-		// Delay ensures the DOM wrapper is ready before we inject the banner div
-		setTimeout(() => {
-			// Show Warning Banner at the top of the Roles Section
-			let roles_ctrl = frm.fields_dict.roles;
-			if (roles_ctrl && roles_ctrl.wrapper) {
-				let $section = $(roles_ctrl.wrapper).closest('.form-section');
-				
-				if ($section.find('.oidc-warning-banner').length === 0) {
-					const msg = __("Roles and module profiles of this user are managed by OIDC. Any manual changes made here will be overwritten upon the user's next login.");
-					$section.prepend(`
-						<div class="alert alert-warning oidc-warning-banner" style="margin: 15px;">
-							<strong><i class="fa fa-exclamation-triangle"></i> ${msg}</strong>
-						</div>
-					`);
-				}
+		if (!managed_by_provider) return;
+
+		frm.set_intro(
+			__(
+				"The roles and module profile of this user are set from the identity provider each time they sign in. Changes made here may be replaced at their next login."
+			),
+			"orange"
+		);
+
+		["role_profiles", "role_profile_name", "module_profile"].forEach((fieldname) => {
+			if (frm.fields_dict[fieldname]) {
+				frm.set_df_property(fieldname, "read_only", 1);
 			}
-		}, 500);
-	}
+		});
+	},
 });
