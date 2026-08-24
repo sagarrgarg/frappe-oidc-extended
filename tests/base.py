@@ -1,0 +1,137 @@
+"""Shared fixtures for the callback tests."""
+
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+	sys.path.insert(0, str(REPO_ROOT))
+
+from tests import frappe_stub  # noqa: E402
+
+PROVIDER = "authentik"
+
+
+class CallbackTestCase(unittest.TestCase):
+	"""Installs a fresh fake Frappe and a configured provider before every test."""
+
+	def setUp(self):
+		self.frappe = frappe_stub.install()
+
+		# Re-import the app against the fresh stub.
+		for name in [n for n in sys.modules if n == "oidc_extended" or n.startswith("oidc_extended.")]:
+			del sys.modules[name]
+		from oidc_extended import callback
+
+		self.callback = callback
+
+		self.social_login_key = frappe_stub.FakeDoc(
+			{
+				"doctype": "Social Login Key",
+				"name": PROVIDER,
+				"provider_name": PROVIDER,
+				"enable_social_login": 1,
+				"client_id": "erpnext-client-id",
+				"client_secret": "erpnext-client-secret",
+				"base_url": "https://idp.example.com",
+				"authorize_url": "/application/o/authorize/",
+				"access_token_url": "/application/o/token/",
+				"redirect_url": f"/api/method/oidc_extended.callback.custom/{PROVIDER}",
+				"auth_url_data": '{"scope": "openid email profile"}',
+				"user_id_property": "sub",
+				"sign_ups": "Allow",
+			}
+		)
+		self.frappe.docs[("Social Login Key", PROVIDER)] = self.social_login_key
+
+		self.config = frappe_stub.FakeDoc(
+			{
+				"doctype": "OIDC Extended Configuration",
+				"name": PROVIDER,
+				"provider": PROVIDER,
+				"given_name_claim_name": "given_name",
+				"family_name_claim_name": "family_name",
+				"email_claim_name": "email",
+				"groups_claim_name": "groups",
+				"group_role_mappings": [],
+				"fallback_role_profiles": [],
+				"group_module_mappings": [],
+				"fallback_module_profile": None,
+			}
+		)
+		self.frappe.docs[("OIDC Extended Configuration", PROVIDER)] = self.config
+
+		self.frappe.flags.role_profile_roles = {
+			"Sales Profile": ["Sales User", "Sales Manager"],
+			"Accounts Profile": ["Accounts User"],
+			"Employee Profile": ["Employee"],
+		}
+
+	# -- helpers -------------------------------------------------------------------
+	def map_group_to_role_profile(self, group, role_profile, **extra):
+		self.config.append("group_role_mappings", {"group": group, "role_profile": role_profile, **extra})
+
+	def set_fallback_role_profiles(self, *role_profiles):
+		for role_profile in role_profiles:
+			self.config.append("fallback_role_profiles", {"role_profile": role_profile})
+
+	def make_state(self, redirect_to=None):
+		from frappe.utils.oauth import create_oauth_state
+
+		return create_oauth_state(redirect_to)
+
+	def id_token_claims(self, **overrides):
+		claims = {
+			"sub": "b1f0c2d4-0000-4000-8000-000000000001",
+			"email": "jane@example.com",
+			"given_name": "Jane",
+			"family_name": "Doe",
+			"groups": ["erp-sales"],
+			"aud": self.social_login_key.client_id,
+			"iss": "https://idp.example.com/application/o/erpnext/",
+		}
+		claims.update(overrides)
+		return claims
+
+	def encode_id_token(self, claims=None):
+		import jwt
+
+		return jwt.encode(claims or self.id_token_claims(), "unit-test-signing-secret-0123456789", algorithm="HS256")
+
+	def run_callback(self, code="auth-code", state=None, claims=None, token_response=None, path=None):
+		"""Invoke the callback with the token endpoint mocked out."""
+		self.frappe.request.path = path or f"/api/method/oidc_extended.callback.custom/{PROVIDER}"
+		if state is None:
+			state = self.make_state()
+
+		response = token_response
+		if response is None:
+			response = {"id_token": self.encode_id_token(claims or self.id_token_claims())}
+
+		post = mock.Mock()
+		post.return_value.json.return_value = response
+		post.return_value.status_code = 200
+		post.return_value.ok = True
+		with mock.patch.object(self.callback.requests, "post", post):
+			result = self.callback.custom(code=code, state=state)
+		self.token_post = post
+		return result
+
+	# -- assertions ----------------------------------------------------------------
+	def assertWebPage(self, http_status_code=None, title_contains=None):
+		self.assertTrue(self.frappe.web_pages, "expected respond_as_web_page to be called")
+		page = self.frappe.web_pages[-1]
+		if http_status_code is not None:
+			self.assertEqual(page.get("http_status_code"), http_status_code, page)
+		if title_contains is not None:
+			self.assertIn(title_contains.lower(), str(page.get("title")).lower(), page)
+		return page
+
+	def assertLoggedIn(self, user):
+		self.assertEqual(self.frappe.local.login_manager.user, user)
+		self.assertEqual(self.frappe.local.response.get("type"), "redirect")
+
+	def assertNotLoggedIn(self):
+		self.assertIsNone(self.frappe.local.login_manager.user)
