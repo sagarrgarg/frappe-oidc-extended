@@ -294,6 +294,7 @@ def install():
 	class _DB:
 		def __init__(self):
 			self.commits = 0
+			self.rollbacks = 0
 
 		def exists(self, doctype, filters=None):
 			if doctype == "User":
@@ -327,6 +328,9 @@ def install():
 
 		def commit(self):
 			self.commits += 1
+
+		def rollback(self):
+			self.rollbacks += 1
 
 	frappe.db = _DB()
 

@@ -450,8 +450,8 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         )
         return
 
-    first_name = id_token.get(given_name_claim_name, "No first name")
-    last_name = id_token.get(family_name_claim_name, "No last name")
+    first_name = id_token.get(given_name_claim_name)
+    last_name = id_token.get(family_name_claim_name)
     # The groups the user have as received in the token.
     groups = normalize_groups(id_token.get(groups_claim_name))
     frappe.logger().debug(f"Groups of user {email}: {groups}")
@@ -506,6 +506,8 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
                 f"whose address in Frappe is {user.email}. Keeping the address on record."
             )
 
+        update_user_names(user, first_name, last_name)
+
         frappe.logger().info(f"The existing user {existing_user_name} fetched successfully.")
         frappe.logger().debug(f"The existing user data: {user.as_dict()}")
     else:
@@ -531,8 +533,8 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         user = frappe.get_doc(
             {
                 "doctype": "User",
-                "first_name": first_name,
-                "last_name": last_name,
+                "first_name": first_name or "No first name",
+                "last_name": last_name or "No last name",
                 "email": email,
                 "send_welcome_email": 0,
                 "enabled": 1,
@@ -599,7 +601,25 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
     if module_profile or unmapped_user_action == REMOVE_ALL_ROLES:
         user.module_profile = module_profile or None
 
-    user.save()
+    try:
+        user.save()
+    except frappe.DuplicateEntryError:
+        # Two first logins for the same person at once: the other request inserted the
+        # user between the lookup above and this save. Nothing here is lost - the next
+        # attempt finds the user that won and carries on - so say so rather than
+        # showing a traceback.
+        frappe.logger().warning(f"The user {email} was created by another login in flight.")
+        frappe.db.rollback()
+        frappe.respond_as_web_page(
+            _("Please Try Again"),
+            _("Your account was being set up by another login. Please try again."),
+            http_status_code=409,
+            indicator_color="orange",
+            success=False,
+            primary_action="/login",
+            primary_label="Try Again",
+        )
+        return
 
     if role_profiles_changed:
         frappe.logger().info(
@@ -634,7 +654,15 @@ def request_id_token(social_login_provider, code: str) -> str | None:
     traceback on a guest-facing page.
     """
     url = build_oauth_url(social_login_provider.base_url, social_login_provider.access_token_url)
-    auth_url_data = json.loads(social_login_provider.auth_url_data or "{}")
+
+    try:
+        auth_url_data = json.loads(social_login_provider.auth_url_data or "{}")
+    except ValueError:
+        frappe.logger().error(
+            f"The auth_url_data of {social_login_provider.name} is not valid JSON; "
+            f"continuing without the scope it would have carried."
+        )
+        auth_url_data = {}
 
     token_request_data = {
         "grant_type": "authorization_code",
@@ -931,6 +959,22 @@ def email_is_acceptable(claims: dict, configuration) -> bool:
         return verified.strip().lower() in ("true", "1", "yes")
 
     return bool(verified)
+
+
+def update_user_names(user, first_name: str | None, last_name: str | None):
+    """Keeps the user's name in step with the claims, without inventing one.
+
+    Only claims the provider actually sent are written: falling back to a placeholder
+    here would overwrite a name someone maintains in Frappe with "No first name".
+    """
+    for fieldname, value in (("first_name", first_name), ("last_name", last_name)):
+        value = (value or "").strip()
+
+        if value and user.get(fieldname) != value:
+            frappe.logger().info(
+                f"Updating the {fieldname} of {user.name} from the claims of {value}."
+            )
+            user.set(fieldname, value)
 
 
 def record_social_login_userid(user, provider_name: str, user_id: str):
