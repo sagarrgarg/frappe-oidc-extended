@@ -1,0 +1,197 @@
+{
+ "actions": [],
+ "autoname": "format:{provider}",
+ "creation": "2023-06-16 19:03:33.874968",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "provider",
+  "claims_section",
+  "given_name_claim_name",
+  "family_name_claim_name",
+  "email_claim_name",
+  "groups_claim_name",
+  "column_break_0",
+  "users_section",
+  "user_provisioning",
+  "new_user_type",
+  "verification_section",
+  "verify_id_token_signature",
+  "jwks_url",
+  "issuer",
+  "roles_section",
+  "fallback_role_profiles",
+  "group_role_mappings",
+  "unmapped_user_action",
+  "modules_section",
+  "fallback_module_profile",
+  "group_module_mappings"
+ ],
+ "fields": [
+  {
+   "fieldname": "provider",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Social Login (OIDC) Provider",
+   "options": "Social Login Key",
+   "reqd": 1,
+   "set_only_once": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "claims_section",
+   "fieldtype": "Section Break",
+   "label": "Token Claims"
+  },
+  {
+   "default": "given_name",
+   "fieldname": "given_name_claim_name",
+   "fieldtype": "Data",
+   "label": "Given Name Claim"
+  },
+  {
+   "default": "family_name",
+   "fieldname": "family_name_claim_name",
+   "fieldtype": "Data",
+   "label": "Family Name Claim"
+  },
+  {
+   "default": "email",
+   "fieldname": "email_claim_name",
+   "fieldtype": "Data",
+   "label": "Email Claim"
+  },
+  {
+   "default": "groups",
+   "description": "The name of the claim that includes a list of user groups.",
+   "fieldname": "groups_claim_name",
+   "fieldtype": "Data",
+   "label": "Groups Claim"
+  },
+  {
+   "fieldname": "column_break_0",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "users_section",
+   "fieldtype": "Section Break",
+   "label": "Users"
+  },
+  {
+   "default": "Use Social Login Key Setting",
+   "description": "Whether a login by someone without a Frappe user account creates one. \"Use Social Login Key Setting\" follows the Sign-ups field of the Social Login Key, falling back to the site's website signup setting, which is what Frappe's own social logins do. \"Always Create Users\" provisions everyone the identity provider lets through, which is only safe when the provider restricts who may reach this callback.",
+   "fieldname": "user_provisioning",
+   "fieldtype": "Select",
+   "label": "User Provisioning",
+   "options": "Use Social Login Key Setting\nAlways Create Users\nNever Create Users"
+  },
+  {
+   "default": "Website User",
+   "description": "The User Type given to users this app creates. Frappe overrides the two standard types on every save - a user holding any role with desk access becomes a System User, everyone else a Website User (User.set_system_user) - so on a site where System Users are billed seats, the role profiles you map decide the cost. A custom User Type is honoured as set.",
+   "fieldname": "new_user_type",
+   "fieldtype": "Link",
+   "label": "User Type For New Users",
+   "options": "User Type"
+  },
+  {
+   "fieldname": "verification_section",
+   "fieldtype": "Section Break",
+   "label": "ID Token Verification"
+  },
+  {
+   "default": "1",
+   "description": "Verifies the signature of the id token against the signing keys of the identity provider. Turn this off only to debug a provider whose keys cannot be reached: an unverified id token is a bearer of unauthenticated claims, including the groups that decide the user's roles.",
+   "fieldname": "verify_id_token_signature",
+   "fieldtype": "Check",
+   "label": "Verify ID Token Signature"
+  },
+  {
+   "depends_on": "eval:doc.verify_id_token_signature",
+   "description": "The JWKS endpoint of the identity provider, for example https://auth.example.com/application/o/erpnext/jwks/. Leave empty to read it from the provider's OpenID discovery document.",
+   "fieldname": "jwks_url",
+   "fieldtype": "Data",
+   "label": "JWKS URL"
+  },
+  {
+   "depends_on": "eval:doc.verify_id_token_signature",
+   "description": "The expected \"iss\" claim of the id token. When set, tokens issued by a different issuer are rejected, and the discovery document is read from this URL. Defaults to the base URL of the Social Login Key.",
+   "fieldname": "issuer",
+   "fieldtype": "Data",
+   "label": "Issuer"
+  },
+  {
+   "fieldname": "roles_section",
+   "fieldtype": "Section Break",
+   "label": "Roles"
+  },
+  {
+   "fieldname": "fallback_role_profiles",
+   "fieldtype": "Table",
+   "label": "Fallback Role Profiles",
+   "options": "OIDC Fallback Role Profile",
+   "description": "If a user has no matching group mappings, they will be assigned these fallback role profiles."
+  },
+  {
+   "fieldname": "group_role_mappings",
+   "fieldtype": "Table",
+   "label": "Group To Role Mappings",
+   "options": "OIDC Group To Role Mapping",
+   "description": "Map OIDC groups to ERPNext roles. This assigns permissions allowing users to access data and make changes based on their role."
+  },
+  {
+   "default": "Keep Existing Roles",
+   "description": "What to do when the identity provider returns no group that matches a mapping above and no fallback role profile is configured. \"Keep Existing Roles\" leaves the user's current roles untouched, \"Remove All Roles\" strips them so that removing a user from every group in the identity provider de-provisions them, and \"Deny Login\" refuses the login instead.",
+   "fieldname": "unmapped_user_action",
+   "fieldtype": "Select",
+   "label": "When No Group Matches",
+   "options": "Keep Existing Roles\nRemove All Roles\nDeny Login"
+  },
+  {
+   "fieldname": "modules_section",
+   "fieldtype": "Section Break",
+   "label": "Modules Mapping"
+  },
+  {
+   "description": "If a user has no matching group mappings, they will be assigned this fallback module profile.",
+   "fieldname": "fallback_module_profile",
+   "fieldtype": "Link",
+   "label": "Fallback Module Profile",
+   "options": "Module Profile"
+  },
+  {
+   "fieldname": "group_module_mappings",
+   "fieldtype": "Table",
+   "label": "Group To Module Mappings",
+   "options": "OIDC Group To Module Mapping",
+   "description": "Map OIDC groups to ERPNext modules. This controls which modules are visible on the workspace/sidebar for the user."
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-24 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "OIDC Extended",
+ "name": "OIDC Extended Configuration",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "provider",
+ "track_changes": 1
+}

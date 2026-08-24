@@ -19,6 +19,17 @@ dependencies = [
 # checks at runtime and says which release is needed.
 frappe = ">=15.116.0,<=17.0.0-dev"
 
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+# Read statically from the module source: importing the app to learn its version
+# fails under PEP 517 build isolation, where the source tree is not importable.
+version = {attr = "oidc_extended.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["oidc_extended", "oidc_extended.*"]
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
