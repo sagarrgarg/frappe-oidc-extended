@@ -52,9 +52,23 @@ class TestSignatureVerification(CallbackTestCase):
 		signed = jwt.encode(
 			self.id_token_claims(), key=self.social_login_key.client_secret, algorithm="HS256"
 		)
-		self.run_callback(id_token=signed)
+		self.run_callback(
+			id_token=signed,
+			discovery={**DISCOVERY_DOCUMENT, "id_token_signing_alg_values_supported": ["HS256"]},
+		)
 
 		self.assertLoggedIn("jane@example.com")
+
+	def test_a_symmetric_token_is_refused_when_the_provider_signs_asymmetrically(self):
+		"""Otherwise a leaked client secret is enough to mint an accepted token for a
+		provider that only ever signs with its own keys."""
+		signed = jwt.encode(
+			self.id_token_claims(), key=self.social_login_key.client_secret, algorithm="HS256"
+		)
+		self.run_callback(id_token=signed)
+
+		self.assertWebPage(http_status_code=401)
+		self.assertNotLoggedIn()
 
 	def test_verification_can_be_turned_off_deliberately(self):
 		self.config.verify_id_token_signature = 0
@@ -212,3 +226,77 @@ class TestKeyDiscovery(CallbackTestCase):
 		self.assertEqual(
 			self.callback.get_signing_algorithms({}), list(self.callback.DEFAULT_SIGNING_ALGORITHMS)
 		)
+
+
+class TestAuthorizedParty(CallbackTestCase):
+	"""A token minted for another client of the same provider must not be accepted."""
+
+	def test_a_token_naming_several_audiences_needs_an_azp(self):
+		self.run_callback(
+			claims=self.id_token_claims(aud=["another-client", "erpnext-client-id"])
+		)
+
+		self.assertWebPage(http_status_code=401)
+		self.assertNotLoggedIn()
+
+	def test_a_token_authorized_to_another_client_is_refused(self):
+		self.run_callback(
+			claims=self.id_token_claims(
+				aud=["another-client", "erpnext-client-id"], azp="another-client"
+			)
+		)
+
+		self.assertWebPage(http_status_code=401)
+		self.assertNotLoggedIn()
+
+	def test_a_token_authorized_to_us_among_several_audiences_is_accepted(self):
+		self.run_callback(
+			claims=self.id_token_claims(
+				aud=["another-client", "erpnext-client-id"], azp="erpnext-client-id"
+			)
+		)
+
+		self.assertLoggedIn("jane@example.com")
+
+	def test_a_single_audience_token_needs_no_azp(self):
+		self.run_callback()
+
+		self.assertLoggedIn("jane@example.com")
+
+
+class TestUnverifiedMode(CallbackTestCase):
+	"""Turning verification off still leaves claims that need no key to check."""
+
+	def setUp(self):
+		super().setUp()
+		self.config.verify_id_token_signature = 0
+
+	def test_an_expired_token_is_refused_even_with_verification_off(self):
+		import time
+
+		now = int(time.time())
+		self.run_callback(claims=self.id_token_claims(iat=now - 3600, exp=now - 60))
+
+		self.assertWebPage(http_status_code=401)
+		self.assertNotLoggedIn()
+
+	def test_a_token_without_an_expiry_is_refused_even_with_verification_off(self):
+		claims = self.id_token_claims()
+		claims.pop("exp")
+		self.run_callback(claims=claims)
+
+		self.assertWebPage(http_status_code=401)
+		self.assertNotLoggedIn()
+
+	def test_a_token_for_another_audience_is_refused_even_with_verification_off(self):
+		self.run_callback(claims=self.id_token_claims(aud="someone-else"))
+
+		self.assertWebPage(http_status_code=401)
+		self.assertNotLoggedIn()
+
+	def test_an_unsigned_token_is_still_accepted_in_this_mode(self):
+		"""That is what the mode is for; the warning says the claims are unauthenticated."""
+		forged = self.encode_id_token(self.id_token_claims(), key=ATTACKER_KEY)
+		self.run_callback(id_token=forged)
+
+		self.assertLoggedIn("jane@example.com")

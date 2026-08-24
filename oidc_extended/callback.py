@@ -752,8 +752,26 @@ def verify_token(encoded_token: str, social_login_provider, configuration, requi
     issuer = configuration.get("issuer") or openid_configuration.get("issuer")
     algorithm = jwt.get_unverified_header(encoded_token).get("alg") or ""
 
+    if not issuer:
+        frappe.logger().warning(
+            f"No issuer is configured for {social_login_provider.name} and none could be read "
+            f"from its OpenID configuration, so the iss claim of its tokens is not checked."
+        )
+
     if algorithm.startswith("HS"):
-        # OpenID Connect Core 15.1: symmetric signatures use the client secret.
+        # OpenID Connect Core 15.1: symmetric signatures use the client secret. The
+        # algorithm comes from the token's own header, so it is only honoured when the
+        # provider says it signs that way - otherwise a token signed with a leaked
+        # client secret would be accepted by a provider that only ever signs
+        # asymmetrically.
+        advertised = openid_configuration.get("id_token_signing_alg_values_supported")
+
+        if advertised and algorithm not in advertised:
+            raise ValueError(
+                f"{social_login_provider.name} does not advertise {algorithm}; it signs with "
+                f"{advertised}."
+            )
+
         key = social_login_provider.get_password("client_secret")
         algorithms = [algorithm]
     else:
@@ -768,7 +786,7 @@ def verify_token(encoded_token: str, social_login_provider, configuration, requi
         key = get_jwk_client(jwks_url).get_signing_key_from_jwt(encoded_token).key
         algorithms = get_signing_algorithms(openid_configuration)
 
-    return jwt.decode(
+    claims = jwt.decode(
         encoded_token,
         key=key,
         algorithms=algorithms,
@@ -777,6 +795,40 @@ def verify_token(encoded_token: str, social_login_provider, configuration, requi
         leeway=leeway,
         options={"require": list(require)},
     )
+
+    validate_authorized_party(claims, social_login_provider.client_id)
+
+    return claims
+
+
+def validate_authorized_party(claims: dict, client_id: str):
+    """Checks "azp" when the token names more than one audience.
+
+    A token whose "aud" is a list is accepted by the audience check as long as this
+    client is somewhere in it, so a token minted for a different client of the same
+    provider would otherwise pass. OpenID Connect Core 3.1.3.7 requires "azp" to name
+    the party the token was issued to, and to be present when there are several
+    audiences.
+    """
+    audience = claims.get("aud")
+    authorized_party = claims.get("azp")
+
+    if isinstance(audience, list | tuple) and len(audience) > 1 and not authorized_party:
+        raise jwt.InvalidAudienceError("The token names several audiences but no azp.")
+
+    if authorized_party and authorized_party != client_id:
+        raise jwt.InvalidAudienceError(f"The token was issued to {authorized_party}, not to us.")
+
+
+def validate_audience_without_signature(claims: dict, client_id: str):
+    """The audience checks PyJWT skips when the signature is not verified."""
+    audience = claims.get("aud")
+    audiences = audience if isinstance(audience, list | tuple) else [audience]
+
+    if client_id not in audiences:
+        raise jwt.InvalidAudienceError(f"The token is addressed to {audience}, not to us.")
+
+    validate_authorized_party(claims, client_id)
 
 
 def decode_id_token(encoded_id_token: str, social_login_provider, configuration) -> dict | None:
@@ -792,11 +844,34 @@ def decode_id_token(encoded_id_token: str, social_login_provider, configuration)
             f"{social_login_provider.name}. The claims of this token, including the groups "
             "that decide the user's roles, are not authenticated."
         )
-        return jwt.decode(
+        claims = jwt.decode(
             encoded_id_token,
             audience=social_login_provider.client_id,
             options={"verify_signature": False, "verify_aud": False},
         )
+
+        # Turning the signature off turns every other check off with it (PyJWT), so the
+        # claims that need no key are checked here: an expired token or one addressed to
+        # another client is wrong whether or not its signature was read.
+        try:
+            expiry = float(claims.get("exp") or 0)
+
+            if not expiry or expiry < time.time():
+                raise jwt.ExpiredSignatureError("The token has expired.")
+
+            validate_audience_without_signature(claims, social_login_provider.client_id)
+        except Exception as exception:
+            frappe.logger().error(f"The id token was rejected: {exception}")
+            frappe.respond_as_web_page(
+                _("Invalid Token"),
+                _("The identity provider returned a token that could not be verified. Please try again."),
+                http_status_code=401,
+                indicator_color="red",
+                success=False,
+            )
+            return None
+
+        return claims
 
     try:
         return verify_token(encoded_id_token, social_login_provider, configuration, require=("exp",))
