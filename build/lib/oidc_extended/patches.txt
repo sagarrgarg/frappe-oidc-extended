@@ -1,4 +1,0 @@
-[pre_model_sync]
-
-[post_model_sync]
-oidc_extended.patches.v1_0.preserve_user_provisioning_behaviour

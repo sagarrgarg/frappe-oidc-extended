@@ -4,4 +4,6 @@
 *.swp
 tags
 oidc_extended/docs/current
-node_modules/
+node_modules/build/
+dist/
+*.whl
