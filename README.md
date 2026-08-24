@@ -112,6 +112,11 @@ expiry is required.
 | --- | --- |
 | User Provisioning | Whether a login by someone without a Frappe account creates one. Follows the Sign-ups field of the Social Login Key by default, which is what Frappe's own social logins do; can be set to always or never create users. |
 | User Type For New Users | The User Type new users are given, `Website User` by default. Frappe replaces either standard type on every save with one derived from the desk access of the user's roles (`User.set_system_user`), so on a site where System Users are billed seats, the role profiles you map are what decides the cost. A custom User Type is honoured as set. |
+| Require A Verified Email Address | On by default. Refuses a login the provider marks as having an unverified address. Users are matched to Frappe accounts by email, so an unverified address is a way into whoever owns that address here. Providers that do not send the claim are unaffected. |
+| Match Users By Username | Off by default. Adds a last-resort match against a Frappe user whose `username` equals the provider's user id claim, for users provisioned by older versions of this app. The claim is not a Frappe username, so this can match an unrelated account carrying that name. |
+
+A user's first and last name follow the claims on each login, when the provider sends
+them. A claim the provider omits leaves the name on record alone.
 
 **Roles and modules**
 
@@ -136,10 +141,15 @@ matches a mapping and no fallback role profile is configured:
 1. The `state` returned by the provider is consumed through Frappe's single-use token. An unknown, expired or already-used one is refused.
 2. The authorization code is exchanged for tokens at the provider's token endpoint.
 3. The id token is verified: signature, audience, issuer and expiry.
-4. The Frappe user is resolved - by social login userid first, so an address changed at the identity provider keeps the account; then by email address, lowercased, which is what Frappe names User records by; then by `username`, for users provisioned by earlier versions of this app.
-5. `Administrator` and `Guest` can never be logged into this way, and a disabled user is refused.
-6. Role profiles and the module profile are assigned from the groups in the token.
-7. If the assignment changed, the user's permission cache is cleared and their other sessions are ended, so a reduced set of roles takes effect immediately rather than at the next session.
+4. An address the provider marks as unverified is refused, unless that requirement is turned off.
+5. The Frappe user is resolved - by social login userid first, so an address changed at the identity provider keeps the account; then by email address, lowercased, which is what Frappe names User records by; and, if asked for, by `username`, for users provisioned by earlier versions of this app.
+6. `Administrator` and `Guest` can never be logged into this way, and a disabled user is refused.
+7. Role profiles and the module profile are assigned from the groups in the token, and the name is brought in step with the claims.
+8. If the assignment changed, the user's permission cache is cleared and their other sessions are ended, so a reduced set of roles takes effect immediately rather than at the next session.
+
+All three endpoints are rate limited per IP. The limits are generous on purpose - an
+office arrives at one NAT address, and revoking every session at the provider sends one
+logout token per user at once - so they bound abuse without policing normal use.
 
 #### Starting a login from the identity provider
 
@@ -195,6 +205,8 @@ reconciliation.
 - Users are matched by social login userid, then email address, then `username`. Versions that matched by `username` alone found nobody on a site whose users predate the app, and then failed trying to create a user whose email address was taken.
 - Id token verification is on after upgrading. A provider whose JWKS endpoint cannot be discovered will refuse logins until the JWKS URL is filled in.
 - Existing configurations keep creating users automatically: a patch sets their User Provisioning to "Always Create Users", which is what they did before the setting existed. Configurations created afterwards follow the Social Login Key.
+- Existing configurations also keep matching users by `username`: a patch turns Match Users By Username on for them, since that leg used to be unconditional. It is off for configurations created afterwards.
+- Logins the provider marks as having an unverified email address are refused from this release on. Turn Require A Verified Email Address off if your provider sends the claim but does not maintain it.
 
 #### Tests
 
