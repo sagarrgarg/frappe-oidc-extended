@@ -15,6 +15,11 @@ from frappe.utils.oauth import consume_oauth_state
 frappe.utils.logger.set_log_level("INFO")
 #frappe.utils.logger.set_log_level("DEBUG")
 
+# Values of the "When No Group Matches" setting on OIDC Extended Configuration.
+KEEP_EXISTING_ROLES = "Keep Existing Roles"
+REMOVE_ALL_ROLES = "Remove All Roles"
+DENY_LOGIN = "Deny Login"
+
 @frappe.whitelist(allow_guest=True)
 def custom(code: str, state: str):
     """Callback for processing the request received after a successful authentication in an identity provider (OIDC provider).
@@ -93,7 +98,7 @@ def custom(code: str, state: str):
     first_name = id_token.get(given_name_claim_name, "No first name")
     last_name = id_token.get(family_name_claim_name, "No last name")
     # The groups the user have as received in the token.
-    groups = id_token.get(groups_claim_name, "")
+    groups = normalize_groups(id_token.get(groups_claim_name))
     frappe.logger().debug(f"Groups of user {username}: {groups}")
 
     frappe.logger().debug(f"Current session user: {frappe.session.user}")
@@ -171,40 +176,44 @@ def custom(code: str, state: str):
     frappe.logger().info(f"Allowing all changes on the user {username} without checking permissions.")
     user.flags.ignore_permissions = True
 
-    # Delegate role mapping to Frappe's native role_profiles table.
+    # Maps the groups of the token to role profiles, most significant first.
     frappe.logger().debug(f"Mapping groups to role profiles for user {username}.")
-    role_profiles = [group_role_mapping.role_profile for group_role_mapping in getattr(oidc_extended_configuration, "group_role_mappings", []) if group_role_mapping.group in groups]
-    
-    # If no groups match, assign the fallback role profiles if configured
-    if not role_profiles:
-        if getattr(oidc_extended_configuration, "fallback_role_profiles", None):
-            fallback_profiles = [d.role_profile for d in oidc_extended_configuration.fallback_role_profiles]
-            role_profiles.extend(fallback_profiles)
+    role_profiles = resolve_role_profiles(oidc_extended_configuration, groups)
+    frappe.logger().debug(f"Role profiles resolved for user {username}: {role_profiles}")
 
-    # Frappe natively allows Multiple Role Profiles via the "role_profiles" child table.
-    current_role_profiles = {rp.role_profile for rp in user.get("role_profiles", [])}
-    new_role_profiles = set(role_profiles)
-    
-    # Check if role profiles changed to clear sessions if they were downgraded or changed
-    role_profiles_changed = current_role_profiles != new_role_profiles
+    unmapped_user_action = oidc_extended_configuration.unmapped_user_action or KEEP_EXISTING_ROLES
 
-    user.set("role_profiles", [])
-    for rp in list(new_role_profiles):
-        user.append("role_profiles", {"role_profile": rp})
+    if not role_profiles and unmapped_user_action == DENY_LOGIN:
+        frappe.logger().warning(
+            f"Denying login for {username}: no group of {groups} is mapped to a role profile "
+            f"and no fallback role profile is configured."
+        )
+        frappe.respond_as_web_page(
+            _("Not Permitted"),
+            _("You are not a member of any group that grants access to this site."),
+            http_status_code=403,
+            indicator_color="red",
+            success=False,
+        )
+        return
+
+    if role_profiles or unmapped_user_action == REMOVE_ALL_ROLES:
+        role_profiles_changed = apply_role_profiles(user, role_profiles)
+    else:
+        # "Keep Existing Roles": the identity provider told us nothing about this
+        # user's entitlements, so leave whatever Frappe has on record alone.
+        frappe.logger().info(
+            f"No role profile matched for {username}; keeping the roles the user already has."
+        )
+        role_profiles_changed = False
 
     # Delegate module blocking to Frappe's native module profile field.
     frappe.logger().debug(f"Mapping groups to module profiles for user {username}.")
-    module_profiles = [m.module_profile for m in getattr(oidc_extended_configuration, "group_module_mappings", []) if m.group in groups]
-    
-    if module_profiles:
-        # Currently, Frappe User doctype supports a single Module Profile natively.
-        # We assign the first matched profile.
-        user.module_profile = module_profiles[0]
-    else:
-        # If no groups match, assign the fallback module profile if configured.
-        fallback_module_profile = getattr(oidc_extended_configuration, "fallback_module_profile", None)
-        user.module_profile = fallback_module_profile or None
-                
+    module_profile = resolve_module_profile(oidc_extended_configuration, groups)
+
+    if module_profile or unmapped_user_action == REMOVE_ALL_ROLES:
+        user.module_profile = module_profile or None
+
     user.save()
 
     if role_profiles_changed:
@@ -221,6 +230,118 @@ def custom(code: str, state: str):
         desk_user=frappe.local.response.get("message") == "Logged In",
         redirect_to=redirect_to or None
     )
+
+def normalize_groups(claim_value) -> list[str]:
+    """Returns the groups claim as a list of exact group names.
+
+    The claim is a JSON array for most identity providers, but some send a single
+    string. Matching a mapping against a raw string with ``in`` would match on
+    substrings - a mapping for "sales" would match the group "erp-sales-readonly" -
+    so the value is turned into a list and compared exactly. A comma is treated as a
+    separator, since group names may contain spaces but not commas.
+    """
+    if not claim_value:
+        return []
+
+    if isinstance(claim_value, str):
+        parts = claim_value.split(",") if "," in claim_value else [claim_value]
+        return [part.strip() for part in parts if part.strip()]
+
+    if isinstance(claim_value, (list, tuple, set)):
+        return [str(group).strip() for group in claim_value if str(group).strip()]
+
+    return [str(claim_value).strip()]
+
+
+def sort_by_priority(rows: list) -> list:
+    """Orders mapping rows by their configured priority, lowest number first.
+
+    Rows sharing a priority keep the order they have in the child table, so the
+    result is deterministic even when a user matches several mapped groups.
+    """
+    return sorted(
+        enumerate(rows), key=lambda pair: (int(pair[1].get("priority") or 0), pair[1].get("idx") or pair[0])
+    )
+
+
+def resolve_role_profiles(configuration, groups: list[str]) -> list[str]:
+    """Role profiles for the given groups, in descending order of precedence.
+
+    Falls back to the configured fallback role profiles when no group matches.
+    Frappe versions that store a single role profile per user assign the first
+    entry, so the order matters.
+    """
+    matched = [
+        row for row in configuration.get("group_role_mappings", []) if row.get("group") in groups
+    ]
+
+    if not matched:
+        matched = list(configuration.get("fallback_role_profiles", []))
+
+    profiles = [row.get("role_profile") for _, row in sort_by_priority(matched)]
+
+    # dict.fromkeys keeps the first occurrence of a profile mapped by several groups.
+    return list(dict.fromkeys(profile for profile in profiles if profile))
+
+
+def resolve_module_profile(configuration, groups: list[str]) -> str | None:
+    """The module profile for the given groups, or the configured fallback."""
+    matched = [
+        row for row in configuration.get("group_module_mappings", []) if row.get("group") in groups
+    ]
+
+    if matched:
+        # The User doctype holds a single module profile, so the highest priority wins.
+        return sort_by_priority(matched)[0][1].get("module_profile")
+
+    return configuration.get("fallback_module_profile") or None
+
+
+def user_has_multiple_role_profiles() -> bool:
+    """True on Frappe versions whose User doctype has the "role_profiles" child table.
+
+    Frappe v15 stores a single role profile in the "role_profile_name" Link field;
+    the child table that allows several of them was introduced in v16.
+    """
+    return bool(frappe.get_meta("User").has_field("role_profiles"))
+
+
+def apply_role_profiles(user, role_profiles: list[str]) -> bool:
+    """Writes the role profiles in the layout of the running Frappe version.
+
+    Returns whether the assignment changed, so the caller can invalidate sessions
+    only when the user's entitlements actually moved.
+    """
+    if user_has_multiple_role_profiles():
+        current = {row.get("role_profile") for row in user.get("role_profiles", [])}
+        changed = current != set(role_profiles)
+
+        user.set("role_profiles", [])
+        for role_profile in role_profiles:
+            user.append("role_profiles", {"role_profile": role_profile})
+    else:
+        current = user.get("role_profile_name")
+        # Only one profile can be stored, so the highest priority match wins.
+        new = role_profiles[0] if role_profiles else None
+        changed = current != new
+        user.role_profile_name = new
+
+        if len(role_profiles) > 1:
+            frappe.logger().info(
+                f"This Frappe version stores a single role profile per user; assigning "
+                f"{new} to {user.name} and ignoring {role_profiles[1:]}."
+            )
+
+    if not role_profiles:
+        # Neither layout clears the role table when the profile is emptied: on v15
+        # User.populate_role_profile_roles only rewrites the roles while a profile is
+        # set. Strip them explicitly so that de-provisioning in the identity provider
+        # reaches Frappe.
+        changed = changed or bool(user.get("roles"))
+        user.set("roles", [])
+
+    return changed
+
 
 def redirect_post_login(desk_user: bool, redirect_to: str):
     frappe.local.response["type"] = "redirect"

@@ -17,6 +17,7 @@
   "roles_section",
   "fallback_role_profiles",
   "group_role_mappings",
+  "unmapped_user_action",
   "modules_section",
   "fallback_module_profile",
   "group_module_mappings"
@@ -86,6 +87,14 @@
    "description": "Map OIDC groups to ERPNext roles. This assigns permissions allowing users to access data and make changes based on their role."
   },
   {
+   "default": "Keep Existing Roles",
+   "description": "What to do when the identity provider returns no group that matches a mapping above and no fallback role profile is configured. \"Keep Existing Roles\" leaves the user's current roles untouched, \"Remove All Roles\" strips them so that removing a user from every group in the identity provider de-provisions them, and \"Deny Login\" refuses the login instead.",
+   "fieldname": "unmapped_user_action",
+   "fieldtype": "Select",
+   "label": "When No Group Matches",
+   "options": "Keep Existing Roles\nRemove All Roles\nDeny Login"
+  },
+  {
    "fieldname": "modules_section",
    "fieldtype": "Section Break",
    "label": "Modules Mapping"
@@ -106,7 +115,7 @@
   }
  ],
  "links": [],
- "modified": "2023-06-17 11:12:05.250379",
+ "modified": "2026-08-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "OIDC Extended",
  "name": "OIDC Extended Configuration",

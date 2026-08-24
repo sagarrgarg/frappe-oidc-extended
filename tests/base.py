@@ -70,6 +70,33 @@ class CallbackTestCase(unittest.TestCase):
 		}
 
 	# -- helpers -------------------------------------------------------------------
+	def use_frappe_v16_user(self):
+		"""Switch the fake User doctype to the v16 layout (role_profiles child table)."""
+		self.frappe.user_fields.add("role_profiles")
+		self.frappe.user_fields.discard("role_profile_name")
+
+	def add_existing_user(self, **fields):
+		"""An already-provisioned Frappe user, matching the default token claims."""
+		claims = self.id_token_claims()
+		defaults = {
+			"email": claims["email"],
+			"username": claims["sub"],
+			"first_name": "Jane",
+			"last_name": "Doe",
+			"enabled": 1,
+			"user_type": "System User",
+		}
+		defaults.update(fields)
+		return self.frappe.user_store.add(**defaults)
+
+	def roles_of(self, user):
+		return [row.get("role") for row in user.get("roles", [])]
+
+	def role_profiles_of(self, user):
+		if "role_profiles" in self.frappe.user_fields:
+			return [row.get("role_profile") for row in user.get("role_profiles", [])]
+		return [user.get("role_profile_name")] if user.get("role_profile_name") else []
+
 	def map_group_to_role_profile(self, group, role_profile, **extra):
 		self.config.append("group_role_mappings", {"group": group, "role_profile": role_profile, **extra})
 
