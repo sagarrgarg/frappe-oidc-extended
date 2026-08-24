@@ -5,6 +5,8 @@
 
 import json
 import time
+from urllib.parse import urlparse
+
 import requests
 import jwt
 
@@ -19,9 +21,9 @@ from frappe.utils import escape_html
 # is how this app detects a Frappe it cannot safely run on - importing them
 # unguarded would turn that into an ImportError on every request instead.
 try:
-    from frappe.utils.oauth import build_oauth_url, consume_oauth_state
+    from frappe.utils.oauth import build_oauth_url, consume_oauth_state, get_redirect_uri
 except ImportError:
-    build_oauth_url = consume_oauth_state = None
+    build_oauth_url = consume_oauth_state = get_redirect_uri = None
 
 from frappe.integrations.doctype.social_login_key.social_login_key import provider_allows_signup
 from frappe.sessions import clear_sessions
@@ -683,6 +685,36 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         redirect_to=redirect_to or None
     )
 
+def redirect_uri_for(provider_name: str) -> str:
+    """The redirect URI to present at the token endpoint.
+
+    Built with Frappe's own `get_redirect_uri`, which is what produced the value sent
+    in the authorization request - the two must be identical or the provider refuses
+    the exchange (RFC 6749 4.1.3). It also honours a `redirect_uri` under
+    `<provider>_login` in site_config.json, which is the way out when the URL Frappe
+    derives is not the one the provider knows.
+
+    That happens more easily than it looks: `frappe.utils.get_url` appends the
+    webserver port to the site URL unless the bench sets `restart_supervisor_on_update`
+    or `restart_systemd_on_update` (frappe/utils/data.py), so a bench with both off
+    produces "https://erp.example.com:8000/..." and every provider rejects it.
+    """
+    redirect_uri = get_redirect_uri(provider_name)
+    parsed = urlparse(redirect_uri)
+
+    if parsed.port and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        frappe.logger().warning(
+            f"The redirect URI for {provider_name} carries a port: {redirect_uri}. Identity "
+            f"providers match this against the URI registered with them, so unless that one "
+            f"carries the port too, the token exchange will be refused. Frappe adds it when "
+            f"neither restart_supervisor_on_update nor restart_systemd_on_update is set in "
+            f"the bench configuration; setting either, or a redirect_uri under "
+            f"{provider_name}_login in site_config.json, removes it."
+        )
+
+    return redirect_uri
+
+
 def request_id_token(social_login_provider, code: str) -> str | None:
     """Exchanges the authorization code for the id token of the token response.
 
@@ -708,7 +740,7 @@ def request_id_token(social_login_provider, code: str) -> str | None:
         "client_secret": social_login_provider.get_password("client_secret"),
         "scope": auth_url_data.get("scope"),
         "code": code,
-        "redirect_uri": frappe.utils.get_url(social_login_provider.redirect_url), # Combines ERPNext URL with redirect URL.
+        "redirect_uri": redirect_uri_for(social_login_provider.name),
     }
 
     try:

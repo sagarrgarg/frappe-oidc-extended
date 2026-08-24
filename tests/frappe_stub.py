@@ -413,6 +413,17 @@ def install():
 			return base_url + url
 		return url
 
+	def get_redirect_uri(provider):
+		"""As frappe.utils.oauth.get_redirect_uri does: site_config wins, else get_url."""
+		keys = frappe.conf.get(f"{provider}_login")
+
+		if keys and keys.get("redirect_uri"):
+			return keys["redirect_uri"]
+
+		doc = frappe.docs.get(("Social Login Key", provider))
+		return utils.get_url(doc.get("redirect_url") if doc else "")
+
+	oauth.get_redirect_uri = get_redirect_uri
 	oauth.build_oauth_url = build_oauth_url
 	oauth.create_oauth_state = create_oauth_state
 	oauth.consume_oauth_state = consume_oauth_state

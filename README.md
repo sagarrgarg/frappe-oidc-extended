@@ -26,6 +26,49 @@ bench --site <site> migrate
 
 `PyJWT[crypto]` is installed with the app; it is what verifies the id token.
 
+#### Installing on a bench that already has the app
+
+`bench get-app` clones into `apps/` and collides if a copy is already there - a bench
+that was used to develop the app, for instance. Check `apps/oidc_extended` first and, if
+it is present, skip straight to installing it:
+
+```bash
+bench --site <site> install-app oidc_extended
+bench --site <site> migrate
+```
+
+Being in `apps/` is not the same as being installed: the app also has to be in the
+site's installed apps and pip-installed into `env`. `bench install-app` does both.
+
+**Restart the workers afterwards.** A web worker started before the app was
+pip-installed cannot import it, and answers every request to the callback with
+`ModuleNotFoundError: No module named 'oidc_extended'` until it is restarted -
+`bench restart`, or restarting the container in a containerised bench.
+
+#### If the identity provider rejects the redirect URI
+
+A redirect URI carrying the webserver port - `https://erp.example.com:8000/api/method/...`
+- is refused by every provider, because it is not the URI registered with them.
+
+The port comes from Frappe, not from this app. `frappe.utils.get_url` appends
+`webserver_port` unless the bench configuration sets `restart_supervisor_on_update` or
+`restart_systemd_on_update`, so a bench with both `false` advertises the development
+port on a production site. Either set one of those flags in
+`sites/common_site_config.json`, or pin the URI for the provider in the site's
+`site_config.json`:
+
+```json
+{
+  "keycloak_login": {
+    "redirect_uri": "https://erp.example.com/api/method/oidc_extended.callback.custom/keycloak"
+  }
+}
+```
+
+The app logs a warning naming both remedies whenever the URI it is about to present
+carries a port, so this shows up in the log rather than as an opaque refusal from the
+provider.
+
 #### Supported Frappe versions
 
 | Frappe | Supported |
