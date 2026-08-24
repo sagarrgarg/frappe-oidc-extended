@@ -7,9 +7,15 @@ description = "An extension to the ERPNext Social Login authentication method (O
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
+dependencies = [
+    # The id token is decoded and verified with PyJWT; the crypto extra provides the
+    # RSA and ECDSA backends needed to check a signature against a JWKS endpoint.
+    "PyJWT[crypto]>=2.4.0",
+]
 
 [tool.bench.frappe-dependencies]
-frappe = "<=17.0.0-dev"
+# The callback uses frappe.utils.oauth.consume_oauth_state, which arrived in v15.
+frappe = ">=15.0.0,<=17.0.0-dev"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
