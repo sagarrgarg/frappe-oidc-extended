@@ -27,7 +27,6 @@ class EmptyDirectoryError(Exception):
 
 class ClientNotFoundError(Exception):
 	"""The provider has no client under the id the Social Login Key presents."""
-	pass
 
 
 def get_directory(configuration):

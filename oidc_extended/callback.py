@@ -1300,14 +1300,6 @@ def managed_roles(configuration) -> set[str]:
     }
 
 
-def role_grants_target(user, granted: list[str], managed: set[str]) -> list[str]:
-    """The roles the user should end up holding: (current - managed) | granted."""
-    current = [row.get("role") for row in user.get("roles", []) if row.get("role")]
-    kept = [role for role in current if role not in managed]
-
-    return list(dict.fromkeys(kept + list(granted)))
-
-
 def role_profile_would_overwrite_grants(user) -> bool:
     """Whether Frappe will rewrite this user's role table from a role profile on save.
 
@@ -1322,6 +1314,24 @@ def role_profile_would_overwrite_grants(user) -> bool:
     top" on Frappe v15, where only one profile can be assigned, use roles for both.
     """
     return bool(user.get("role_profile_name") or user.get("role_profiles"))
+
+
+def role_grants_target(user, granted: list[str], managed: set[str]) -> list[str]:
+    """The roles the user should end up holding: (current - managed) | granted.
+
+    Their current roles, unchanged, when a role profile is assigned: Frappe rewrites
+    the table from that profile on the next save whatever this says, so answering
+    anything else would have a caller write the user, achieve nothing, and find the
+    same difference on the next run - clearing their sessions every time.
+    """
+    current = [row.get("role") for row in user.get("roles", []) if row.get("role")]
+
+    if role_profile_would_overwrite_grants(user):
+        return current
+
+    kept = [role for role in current if role not in managed]
+
+    return list(dict.fromkeys(kept + list(granted)))
 
 
 def apply_role_grants(user, granted: list[str], managed: set[str]) -> bool:

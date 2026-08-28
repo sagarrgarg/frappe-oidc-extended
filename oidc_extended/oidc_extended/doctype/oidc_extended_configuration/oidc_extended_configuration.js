@@ -38,27 +38,28 @@ function fetch_groups(frm) {
                         return;
                     }
 
-                    frm.reload_doc().then(function() {
-                        frappe.msgprint({
-                            title: __('Groups Fetched'),
-                            indicator: 'green',
-                            message: __('Read {0} names from {1}.', [result.groups.length, result.source])
-                                + '<ul>'
-                                + '<li>' + __('Role profile mappings: {0} added, {1} already mapped.', [
-                                    result.group_role_mappings_added,
-                                    result.group_role_mappings_present
-                                ]) + '</li>'
-                                + '<li>' + __('Role grants: {0} added, {1} already mapped.', [
-                                    result.group_role_grants_added,
-                                    result.group_role_grants_present
-                                ]) + '</li>'
-                                + '<li>' + __('Module mappings: {0} added, {1} already mapped.', [
-                                    result.group_module_mappings_added,
-                                    result.group_module_mappings_present
-                                ]) + '</li>'
-                                + '</ul>'
-                                + __('Added rows carry no profile yet, and are ignored at login until one is set. Save the document after filling them in.')
-                        });
+                    frm.reload_doc();
+                    frappe.msgprint({
+                        title: __('Groups Fetched'),
+                        indicator: 'green',
+                        message: [
+                            __('Read {0} names from {1}.', [result.groups.length, result.source]),
+                            '<ul>',
+                            '<li>' + __('Role profile mappings: {0} added, {1} already mapped.', [
+                                result.group_role_mappings_added,
+                                result.group_role_mappings_present
+                            ]) + '</li>',
+                            '<li>' + __('Role grants: {0} added, {1} already mapped.', [
+                                result.group_role_grants_added,
+                                result.group_role_grants_present
+                            ]) + '</li>',
+                            '<li>' + __('Module mappings: {0} added, {1} already mapped.', [
+                                result.group_module_mappings_added,
+                                result.group_module_mappings_present
+                            ]) + '</li>',
+                            '</ul>',
+                            __('An added row carries no profile or role yet, and is ignored at login until you give it one. Delete the rows in the tables you are not using.')
+                        ].join('')
                     });
                 }
             });

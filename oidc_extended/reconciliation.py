@@ -94,6 +94,7 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		"absent": [],
 		"disabled_at_provider": [],
 		"unmapped": [],
+		"settled": [],
 		"roles_changed": [],
 		"unchanged": [],
 		"skipped": [],
@@ -109,11 +110,19 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		entry = by_subject.get(subject) or by_email.get((user.email or "").lower())
 
 		if not entry:
-			report["absent"].append({"user": user_name, "action": absent_user_action})
+			if nothing_left_to_do(user, absent_user_action):
+				report["settled"].append({"user": user_name, "reason": "absent"})
+			else:
+				report["absent"].append({"user": user_name, "action": absent_user_action})
 			continue
 
 		if not entry["enabled"]:
-			report["disabled_at_provider"].append({"user": user_name, "action": absent_user_action})
+			if nothing_left_to_do(user, absent_user_action):
+				report["settled"].append({"user": user_name, "reason": "disabled at the provider"})
+			else:
+				report["disabled_at_provider"].append(
+					{"user": user_name, "action": absent_user_action}
+				)
 			continue
 
 		groups = normalize_groups(entry["groups"])
@@ -124,7 +133,10 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		# The same evaluation the login does, so that a scheduled run and a login reach
 		# the same verdict about the same user.
 		if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
-			report["unmapped"].append({"user": user_name, "groups": entry["groups"]})
+			if nothing_left_to_do(user, DISABLE_USER):
+				report["settled"].append({"user": user_name, "reason": "no mapped group"})
+			else:
+				report["unmapped"].append({"user": user_name, "groups": entry["groups"]})
 			continue
 
 		# The identity provider vouches for them again, and this run is the only thing
@@ -178,6 +190,29 @@ def linked_users(provider: str) -> list[tuple[str, str]]:
 	return [(row["parent"], row["userid"]) for row in rows]
 
 
+def nothing_left_to_do(user, action: str) -> bool:
+	"""Whether an earlier run has already applied this action to this user.
+
+	Reporting somebody every run is not harmless. They are written again each time -
+	sessions cleared, record saved, a version row for a change that is not a change -
+	and they keep counting towards the mass-change guard below. A site where more than
+	half the linked users have left, or have drifted out of every mapped group, would
+	eventually refuse to reconcile at all, which stops the runs that would have caught
+	the next real departure.
+
+	"Report Only" is exempt: reporting is the whole of what it does.
+	"""
+	if action == REPORT_ONLY:
+		return False
+
+	if action == DISABLE_USER and user.enabled:
+		return False
+
+	return not (
+		current_role_profiles(user) or user.get("roles") or user.get("module_profile")
+	)
+
+
 def current_role_profiles(user) -> list[str]:
 	if user.get("role_profiles"):
 		return [row.get("role_profile") for row in user.get("role_profiles")]
@@ -197,8 +232,9 @@ def guard_against_mass_change(report: dict):
 	if affected / report["linked_users"] > MAX_AFFECTED_FRACTION:
 		raise EmptyDirectoryError(
 			f"{affected} of {report['linked_users']} users linked to {report['provider']} are "
-			f"missing or disabled in the directory. Refusing to act on what looks like an "
-			f"incomplete answer; run a dry run and check the directory."
+			f"missing from the directory, disabled there, or in no group this site maps. "
+			f"Refusing to act on what looks like an incomplete answer; run a dry run and "
+			f"check the directory."
 		)
 
 
@@ -441,14 +477,17 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 		return {"user": user_name, "action": "skipped"}
 
 	entry = get_directory(configuration).get_user(subject=subject, email=email)
+	user = frappe.get_doc("User", user_name)
+	user.flags.ignore_permissions = True
 
 	if not entry or not entry["enabled"]:
+		if nothing_left_to_do(user, absent_user_action):
+			return {"user": user_name, "action": "unchanged"}
+
 		deprovision(user_name, absent_user_action)
 		frappe.db.commit()
 		return {"user": user_name, "action": absent_user_action}
 
-	user = frappe.get_doc("User", user_name)
-	user.flags.ignore_permissions = True
 	groups = normalize_groups(entry["groups"])
 	role_profiles = resolve_role_profiles(configuration, groups)
 	module_profile = resolve_module_profile(configuration, groups)
@@ -457,6 +496,9 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 	disable_unmapped = disabling_unmapped_users(configuration)
 
 	if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
+		if nothing_left_to_do(user, DISABLE_USER):
+			return {"user": user_name, "action": "unchanged"}
+
 		deprovision(
 			user_name,
 			DISABLE_USER,

@@ -383,3 +383,137 @@ class TestRoleGrants(ReconciliationTestCase):
 
 		self.assertEqual(report["unmapped"], [])
 		self.assertEqual(user.get("enabled"), 1)
+
+
+class TestRepeatedRuns(ReconciliationTestCase):
+	"""A user already dealt with is not dealt with again, every hour, forever."""
+
+	def setUp(self):
+		super().setUp()
+		self.config.disable_unmapped_users = 1
+		self.config.absent_user_action = "Disable User"
+
+	def test_a_disabled_unmapped_user_is_not_rewritten_on_the_next_run(self):
+		user = self.add_linked_user("jane@example.com", "sub-1", role_profile_name="Sales Profile")
+		self.add_linked_user("john@example.com", "sub-2")
+		directory = [
+			self.directory_user("jane@example.com", "sub-1", groups=["/nowhere"]),
+			self.directory_user("john@example.com", "sub-2"),
+		]
+
+		self.run_reconciliation(directory)
+		saves = user.save_count
+		self.frappe.sessions.cleared.clear()
+
+		report = self.run_reconciliation(directory)
+
+		self.assertEqual(report["unmapped"], [])
+		self.assertEqual([e["user"] for e in report["settled"]], ["jane@example.com"])
+		self.assertEqual(user.save_count, saves)
+		self.assertEqual(self.frappe.sessions.cleared, [])
+
+	def test_a_departed_user_is_not_rewritten_on_the_next_run(self):
+		user = self.add_linked_user("jane@example.com", "sub-1", role_profile_name="Sales Profile")
+		self.add_linked_user("john@example.com", "sub-2")
+		directory = [self.directory_user("john@example.com", "sub-2")]
+
+		self.run_reconciliation(directory)
+		saves = user.save_count
+
+		report = self.run_reconciliation(directory)
+
+		self.assertEqual(report["absent"], [])
+		self.assertEqual([e["user"] for e in report["settled"]], ["jane@example.com"])
+		self.assertEqual(user.save_count, saves)
+
+	def test_report_only_keeps_reporting_because_that_is_all_it_does(self):
+		self.config.absent_user_action = "Report Only"
+		self.config.disable_unmapped_users = 0
+		self.add_linked_user("jane@example.com", "sub-1")
+		self.add_linked_user("john@example.com", "sub-2")
+		directory = [self.directory_user("john@example.com", "sub-2")]
+
+		self.run_reconciliation(directory)
+		report = self.run_reconciliation(directory)
+
+		self.assertEqual([e["user"] for e in report["absent"]], ["jane@example.com"])
+
+	def test_settled_users_stop_counting_towards_the_mass_change_guard(self):
+		"""Otherwise a site whose leavers accumulate past half stops reconciling at all."""
+		for index in range(6):
+			self.add_linked_user(f"gone{index}@example.com", f"gone-{index}", enabled=0)
+		for index in range(4):
+			self.add_linked_user(
+				f"here{index}@example.com", f"here-{index}", role_profile_name="Accounts Profile"
+			)
+
+		report = self.run_reconciliation(
+			[self.directory_user(f"here{index}@example.com", f"here-{index}") for index in range(4)]
+		)
+
+		self.assertEqual(len(report["settled"]), 6)
+		self.assertEqual(len(report["roles_changed"]), 4)
+		self.assertEqual(
+			self.frappe.user_store.users["here0@example.com"].get("role_profile_name"),
+			"Sales Profile",
+		)
+
+
+class TestRepeatedWebhookCalls(ReconciliationTestCase):
+	"""An event listener can be chatty; a settled user is not rewritten each time."""
+
+	def reconcile_user(self, entry):
+		with mock.patch.object(
+			self.reconciliation,
+			"get_directory",
+			return_value=mock.Mock(get_user=lambda **kwargs: entry),
+		):
+			return self.reconciliation.reconcile_user(PROVIDER, subject="sub-1")
+
+	def test_a_departed_user_is_deprovisioned_once(self):
+		user = self.add_linked_user("jane@example.com", "sub-1", role_profile_name="Sales Profile")
+
+		self.assertEqual(self.reconcile_user(None)["action"], "Disable User")
+		saves = user.save_count
+
+		self.assertEqual(self.reconcile_user(None)["action"], "unchanged")
+		self.assertEqual(user.save_count, saves)
+
+	def test_an_unmapped_user_is_disabled_once(self):
+		self.config.disable_unmapped_users = 1
+		user = self.add_linked_user("jane@example.com", "sub-1", role_profile_name="Sales Profile")
+		entry = self.directory_user("jane@example.com", "sub-1", groups=["/nowhere"])
+
+		self.assertEqual(self.reconcile_user(entry)["action"], "Disable User")
+		saves = user.save_count
+
+		self.assertEqual(self.reconcile_user(entry)["action"], "unchanged")
+		self.assertEqual(user.save_count, saves)
+
+
+class TestNoChurn(ReconciliationTestCase):
+	"""A run that cannot change anything must not keep trying."""
+
+	def test_a_profile_and_a_matching_grant_settle_instead_of_looping(self):
+		"""Frappe rewrites the role table from the profile, so the grant never lands.
+		Reporting it as a change every run rewrote the user and ended their sessions
+		hourly, forever, without ever applying anything."""
+		self.config.append(
+			"group_role_grants", {"group": "/erp/approvers", "role": "Accounts Manager"}
+		)
+		user = self.add_linked_user(
+			"jane@example.com",
+			"sub-1",
+			role_profile_name="Sales Profile",
+			roles=[{"role": "Sales User"}, {"role": "Sales Manager"}],
+		)
+		directory = [
+			self.directory_user("jane@example.com", "sub-1", groups=["/erp/sales", "/erp/approvers"])
+		]
+
+		for _ in range(3):
+			report = self.run_reconciliation(directory)
+
+		self.assertEqual(report["unchanged"], ["jane@example.com"])
+		self.assertEqual(user.save_count, 0)
+		self.assertEqual(self.frappe.sessions.cleared, [])

@@ -13,6 +13,7 @@ changes nothing until somebody finishes it.
 """
 
 import frappe
+import requests
 from frappe import _
 
 from oidc_extended.directory import ClientNotFoundError, get_directory
@@ -54,6 +55,16 @@ def fetch_groups(provider: str) -> dict:
 		frappe.throw(
 			_("The identity provider has no client with the id {0}, which is the Client ID of the Social Login Key {1}.").format(
 				frappe.bold(client_id), configuration.provider
+			)
+		)
+	except requests.RequestException as exception:
+		# Credentials that are present but wrong, a URL that is not the directory, a
+		# service account without view-users: all of these arrive as an HTTP error, and
+		# a traceback on the screen says none of it.
+		frappe.logger().error(f"Reading the groups of {provider} failed: {exception}")
+		frappe.throw(
+			_("The identity provider could not be asked for its groups: {0}. Check the Directory URL and the service account credentials under Reconciliation.").format(
+				frappe.bold(str(exception))
 			)
 		)
 

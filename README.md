@@ -409,7 +409,11 @@ frappe.call("oidc_extended.reconciliation.reconcile", provider="keycloak", dry_r
 ```
 
 It returns what it would do - which users are absent, which are disabled at the
-provider, whose roles would change and to what - and writes nothing.
+provider, which match no mapped group, whose roles would change and to what - and writes
+nothing. Users the configured action has already been applied to are listed as
+`settled` and left alone: reporting somebody every run would rewrite their record each
+time and, worse, keep them counting towards the guard below until it refused to run at
+all.
 
 Three things it refuses to do, because a de-provisioning job that misfires is worse
 than one that does not run:

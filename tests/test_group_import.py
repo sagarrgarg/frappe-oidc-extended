@@ -211,3 +211,24 @@ class TestAuthentikGroupNames(GroupImportTestCase):
 
 		self.assertEqual(names, ["erp-sales", "erp-accounts"])
 		self.assertEqual(source, "the groups of the directory")
+
+
+class TestWhenTheProviderCannotBeAsked(GroupImportTestCase):
+	def test_an_http_error_is_reported_rather_than_raised(self):
+		"""Wrong credentials, a URL that is not the directory, a service account without
+		view-users: all of these arrive as an HTTP error, and a traceback says none of it."""
+		import requests
+
+		with mock.patch.object(
+			self.groups,
+			"get_directory",
+			return_value=mock.Mock(
+				get_group_names=mock.Mock(side_effect=requests.HTTPError("401 Unauthorized"))
+			),
+		):
+			with self.assertRaises(Exception) as raised:
+				self.groups.fetch_groups(PROVIDER)
+
+		self.assertIn("401 Unauthorized", str(raised.exception))
+		self.assertIn("service account credentials", str(raised.exception))
+		self.assertEqual(self.rows("group_role_mappings"), [])
