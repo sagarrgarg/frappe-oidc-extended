@@ -24,6 +24,7 @@
   "jwks_url",
   "issuer",
   "roles_section",
+  "manage_roles",
   "fallback_role_profiles",
   "group_role_mappings",
   "group_role_grants",
@@ -36,6 +37,8 @@
   "enable_reconciliation",
   "reconciliation_frequency",
   "absent_user_action",
+  "reconcile_all_users",
+  "reconciliation_exempt_users",
   "directory_type",
   "directory_url",
   "directory_client_id",
@@ -157,6 +160,14 @@
    "label": "Roles"
   },
   {
+   "default": "1",
+   "description": "On by default, and what this app has always done: the groups in the token decide the user's role profiles, roles and module profile. Turn it off for a site that uses the identity provider to sign people in and to close their accounts when they leave, and assigns roles in the ERP by hand. Nothing below is then read or written - not the mappings, not the fallbacks, not \"When No Group Matches\", not \"Disable Users With No Mapped Group\" - and a login leaves the roles the ERP gave someone exactly as they are. Keeping directory groups in step with ERP roles costs more than it saves at some sizes; this is the switch for that.",
+   "fieldname": "manage_roles",
+   "fieldtype": "Check",
+   "label": "Manage Roles From The Identity Provider"
+  },
+  {
+   "depends_on": "eval:doc.manage_roles",
    "fieldname": "fallback_role_profiles",
    "fieldtype": "Table",
    "label": "Fallback Role Profiles",
@@ -164,6 +175,7 @@
    "description": "If a user has no matching group mappings, they will be assigned these fallback role profiles. Consider leaving this empty: a fallback grants permissions to a user the identity provider said nothing about, and it counts as a mapped group, so with \"Disable Users With No Mapped Group\" on nobody is ever unmapped and that option can never fire."
   },
   {
+   "depends_on": "eval:doc.manage_roles",
    "fieldname": "group_role_mappings",
    "fieldtype": "Table",
    "label": "Group To Role Mappings",
@@ -171,6 +183,7 @@
    "description": "Map OIDC groups to ERPNext roles. This assigns permissions allowing users to access data and make changes based on their role."
   },
   {
+   "depends_on": "eval:doc.manage_roles",
    "fieldname": "group_role_grants",
    "fieldtype": "Table",
    "label": "Group To Role Grants",
@@ -178,6 +191,7 @@
    "description": "Map OIDC groups to individual Roles. Where the profile mappings above compete - a role profile is a single Link on Frappe v15, so only the highest-priority match is assigned - these add up: a user in three mapped groups is granted all three roles, which is how \"everything an accounts user has, and approval on top\" is expressed. Only the roles named in this table are ever taken away, so a role granted here by hand in Frappe survives every login."
   },
   {
+   "depends_on": "eval:doc.manage_roles",
    "default": "Keep Existing Roles",
    "description": "What to do when the identity provider returns no group that matches a mapping above and no fallback role profile is configured. \"Keep Existing Roles\" leaves the user's current roles untouched, \"Remove All Roles\" strips them so that removing a user from every group in the identity provider de-provisions them, and \"Deny Login\" refuses the login instead.",
    "fieldname": "unmapped_user_action",
@@ -186,6 +200,7 @@
    "options": "Keep Existing Roles\nRemove All Roles\nDeny Login"
   },
   {
+   "depends_on": "eval:doc.manage_roles",
    "default": "0",
    "description": "Disables the Frappe account of a user whose groups match no mapping above or below, and grant no fallback profile. Refusing the login is not the same as closing the account: a user denied at the door keeps an enabled account, and with it its API keys, its seat and its local password, none of which the identity provider can revoke. This composes with the setting above rather than replacing it - that one still decides what happens to the roles - so leaving it on \"Keep Existing Roles\" and turning this on lets group membership gate access without this app ever touching anybody's roles. A user whose group comes back is enabled again at their next login, so a membership removed by mistake is not permanent; by the same token, an account disabled by hand here is reopened if the provider still vouches for it. Administrator, Guest and the last enabled System Manager are never disabled, and never stripped of their roles either - an enabled account without the role that makes it useful is the same lockout. The guard is logged when it fires. Off by default.",
    "fieldname": "disable_unmapped_users",
@@ -193,6 +208,7 @@
    "label": "Disable Users With No Mapped Group"
   },
   {
+   "depends_on": "eval:doc.manage_roles",
    "fieldname": "modules_section",
    "fieldtype": "Section Break",
    "label": "Modules Mapping"
@@ -228,8 +244,9 @@
    "fieldtype": "Select",
    "default": "Daily",
    "depends_on": "eval:doc.enable_reconciliation",
+   "description": "How often a run is allowed, checked inside the task itself: the scheduler calls it every 15 minutes and it returns immediately unless this much time has passed since the last run.",
    "label": "Frequency",
-   "options": "Daily\nHourly"
+   "options": "Daily\nHourly\nEvery 15 Minutes"
   },
   {
    "fieldname": "absent_user_action",
@@ -239,6 +256,22 @@
    "label": "When A User Is Gone Or Disabled",
    "description": "What to do with a Frappe user the directory no longer has, or has disabled. \"Report Only\" writes to the log and changes nothing. The other two strip the role profiles and module profile first, so that a user re-enabled locally does not return with the entitlements they left with.",
    "options": "Report Only\nRemove All Roles\nDisable User"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_reconciliation",
+   "description": "Off by default, in which case only users who have signed in through this provider at least once are reconciled - a social login record is what ties a Frappe user to a directory entry. Turn it on to reconcile every enabled user instead, matching them to the directory by email address, so that an account somebody created here by hand is closed too when that person leaves. Read what that means first: a user the directory has never heard of - a service account, an integration, a contractor set up locally - is indistinguishable from somebody who has left, and will be disabled. List those below.",
+   "fieldname": "reconcile_all_users",
+   "fieldtype": "Check",
+   "label": "Reconcile Every Enabled User"
+  },
+  {
+   "depends_on": "eval:doc.reconcile_all_users",
+   "description": "Users this reconciliation must never act on.",
+   "fieldname": "reconciliation_exempt_users",
+   "fieldtype": "Table",
+   "label": "Never Reconcile These Users",
+   "options": "OIDC Reconciliation Exemption"
   },
   {
    "fieldname": "directory_type",

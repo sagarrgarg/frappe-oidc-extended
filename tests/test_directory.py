@@ -129,3 +129,41 @@ class TestDirectorySelection(DirectoryTestCase):
 
 		with self.assertRaises(Exception):
 			self.directory.get_directory(self.config)
+
+
+class TestSkippingTheGroupFetch(TestKeycloakDirectory):
+	"""Keycloak does not return group membership with the user list, so asking for it
+	costs one request per user. A site that does not manage roles never reads them, and
+	that difference is what makes a fifteen-minute sweep possible on a real realm."""
+
+	def keycloak(self, *payloads, with_groups=True):
+		token = mock.Mock()
+		token.json.return_value = {"access_token": "an-access-token"}
+		token.raise_for_status.return_value = None
+
+		with mock.patch.object(self.directory.requests, "post", return_value=token):
+			with mock.patch.object(
+				self.directory.requests, "get", side_effect=self.responses(*payloads)
+			):
+				return self.directory.get_directory(self.config).get_users(with_groups=with_groups)
+
+	def test_the_groups_are_read_by_default(self):
+		users = [{"id": "sub-1", "email": "jane@example.com", "enabled": True}]
+		groups = [{"id": "g1", "name": "sales", "path": "/erp/sales"}]
+
+		result = self.keycloak(users, groups)
+
+		self.assertEqual(result[0]["groups"], ["/erp/sales"])
+		self.assertEqual(len(self.requested), 2)
+
+	def test_one_request_serves_the_whole_page_when_they_are_not(self):
+		users = [
+			{"id": "sub-1", "email": "jane@example.com", "enabled": True},
+			{"id": "sub-2", "email": "john@example.com", "enabled": False},
+		]
+
+		result = self.keycloak(users, with_groups=False)
+
+		self.assertEqual([user["enabled"] for user in result], [True, False])
+		self.assertEqual([user["groups"] for user in result], [[], []])
+		self.assertEqual(len(self.requested), 1)

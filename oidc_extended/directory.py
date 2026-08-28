@@ -50,10 +50,12 @@ class Directory:
 		if not self.url:
 			frappe.throw(f"No directory URL is configured for {configuration.get('provider')}.")
 
-	def get_users(self) -> list[dict]:
+	def get_users(self, with_groups: bool = True) -> list[dict]:
 		raise NotImplementedError
 
-	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
+	def get_user(
+		self, subject: str | None = None, email: str | None = None, with_groups: bool = True
+	) -> dict | None:
 		raise NotImplementedError
 
 	def get_group_names(self, client_id: str | None = None) -> tuple[list[str], str]:
@@ -100,7 +102,16 @@ class KeycloakDirectory(Directory):
 		response.raise_for_status()
 		return response.json()["access_token"]
 
-	def get_users(self) -> list[dict]:
+	def get_users(self, with_groups: bool = True) -> list[dict]:
+		"""Every user in the realm, with their group paths unless they are not wanted.
+
+		Keycloak does not return group membership with the user list, so `with_groups`
+		costs one further request per user - a thousand-user realm is a thousand calls.
+		A site that has this app sign people in and close their accounts but not manage
+		their roles never looks at the groups, and asking for them anyway is the
+		difference between a sweep that can run every fifteen minutes and one that
+		cannot.
+		"""
 		headers = {"Authorization": f"Bearer {self.get_token()}"}
 		users = []
 		first = 0
@@ -117,7 +128,11 @@ class KeycloakDirectory(Directory):
 
 			for entry in page:
 				# Keycloak's user id is the `sub` of the tokens it issues.
-				groups = self.get(f"{self.admin_url}/users/{entry['id']}/groups", headers=headers)
+				groups = (
+					self.get(f"{self.admin_url}/users/{entry['id']}/groups", headers=headers)
+					if with_groups
+					else []
+				)
 				users.append(
 					{
 						"subject": entry.get("id"),
@@ -200,7 +215,9 @@ class KeycloakDirectory(Directory):
 
 		return paths
 
-	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
+	def get_user(
+		self, subject: str | None = None, email: str | None = None, with_groups: bool = True
+	) -> dict | None:
 		"""One user, for acting on a single change rather than sweeping everyone."""
 		headers = {"Authorization": f"Bearer {self.get_token()}"}
 
@@ -223,7 +240,11 @@ class KeycloakDirectory(Directory):
 		if not entry:
 			return None
 
-		groups = self.get(f"{self.admin_url}/users/{entry['id']}/groups", headers=headers)
+		groups = (
+			self.get(f"{self.admin_url}/users/{entry['id']}/groups", headers=headers)
+			if with_groups
+			else []
+		)
 
 		return {
 			"subject": entry.get("id"),
@@ -241,7 +262,9 @@ class AuthentikDirectory(Directory):
 	its tokens.
 	"""
 
-	def get_users(self) -> list[dict]:
+	def get_users(self, with_groups: bool = True) -> list[dict]:
+		"""authentik returns the groups with the user, so there is nothing to save by
+		leaving them out; `with_groups` is accepted and ignored."""
 		headers = {"Authorization": f"Bearer {self.configuration.get_password('directory_api_token')}"}
 		users = []
 		page = 1
@@ -294,7 +317,9 @@ class AuthentikDirectory(Directory):
 
 		return names, "the groups of the directory"
 
-	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
+	def get_user(
+		self, subject: str | None = None, email: str | None = None, with_groups: bool = True
+	) -> dict | None:
 		if not email:
 			return None
 

@@ -39,10 +39,16 @@ doctype_js = {
 }
 
 # Asks each configured identity provider which of its users are still there, still
-# enabled and still in which groups. Runs hourly and skips the providers that are not
-# due; nothing happens at all unless a provider has reconciliation turned on.
+# enabled and still in which groups. Called every quarter of an hour, which is the
+# shortest cadence the Frequency setting offers; the task itself returns immediately
+# unless that provider is due, and nothing happens at all unless a provider has
+# reconciliation turned on. Registered as a cron rather than under the hourly event
+# because the scheduler cannot call a job more often than the event it is registered
+# under, which would make a sub-hourly Frequency a setting that could not take effect.
 scheduler_events = {
-	"hourly": ["oidc_extended.reconciliation.run_scheduled_reconciliation"],
+	"cron": {
+		"*/15 * * * *": ["oidc_extended.reconciliation.run_scheduled_reconciliation"],
+	},
 }
 
 # Home Pages

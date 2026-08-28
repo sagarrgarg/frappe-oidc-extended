@@ -31,7 +31,9 @@ class ReconciliationTestCase(CallbackTestCase):
 
 	def run_reconciliation(self, directory_users, dry_run=False):
 		with mock.patch.object(
-			self.reconciliation, "get_directory", return_value=mock.Mock(get_users=lambda: directory_users)
+			self.reconciliation,
+			"get_directory",
+			return_value=mock.Mock(get_users=lambda **kwargs: directory_users),
 		):
 			return self.reconciliation.run_reconciliation(PROVIDER, dry_run=dry_run)
 
@@ -568,3 +570,105 @@ class TestTheSiteKeepsAnAdministrator(ReconciliationTestCase):
 		self.run_reconciliation([self.directory_user("john@example.com", "sub-2")])
 
 		self.assertEqual(self.roles_of(user), ["System Manager"])
+
+
+class TestReconcilingEveryEnabledUser(ReconciliationTestCase):
+	"""By default only users who have signed in through the provider are considered - a
+	social login row is the one thing tying a Frappe user to a directory entry. That is
+	too narrow for a site whose reason for running this is offboarding: an account made
+	here by hand belongs to a real person, and when they leave nothing closes it."""
+
+	def add_local_user(self, email, **fields):
+		fields.setdefault("enabled", 1)
+		return self.frappe.user_store.add(email=email, **fields)
+
+	def test_by_default_a_user_who_has_never_signed_in_is_untouched(self):
+		local = self.add_local_user("local@example.com")
+		self.add_linked_user("jane@example.com", "sub-1")
+
+		report = self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
+
+		self.assertEqual(local.get("enabled"), 1)
+		self.assertNotIn("local@example.com", [entry["user"] for entry in report["absent"]])
+
+	def test_with_the_option_on_they_are_matched_by_email_and_disabled(self):
+		self.config.reconcile_all_users = 1
+		local = self.add_local_user("local@example.com")
+		self.add_linked_user("jane@example.com", "sub-1")
+		self.add_linked_user("john@example.com", "sub-2")
+
+		report = self.run_reconciliation(
+			[
+				self.directory_user("jane@example.com", "sub-1"),
+				self.directory_user("john@example.com", "sub-2"),
+			]
+		)
+
+		self.assertEqual([entry["user"] for entry in report["absent"]], ["local@example.com"])
+		self.assertEqual(local.get("enabled"), 0)
+
+	def test_a_local_user_the_directory_does_have_is_reconciled_normally(self):
+		self.config.reconcile_all_users = 1
+		local = self.add_local_user("local@example.com")
+
+		self.run_reconciliation(
+			[self.directory_user("local@example.com", "sub-local", groups=["/erp/accounts"])]
+		)
+
+		self.assertEqual(local.get("enabled"), 1)
+		self.assertEqual(local.get("role_profile_name"), "Accounts Profile")
+
+	def test_an_exempt_user_is_never_acted_on(self):
+		"""A service account cannot be told apart from somebody who has left."""
+		self.config.reconcile_all_users = 1
+		self.config.append(
+			"reconciliation_exempt_users",
+			{"user": "integration@example.com", "reason": "the warehouse scanner"},
+		)
+		service = self.add_local_user("integration@example.com")
+		self.add_linked_user("jane@example.com", "sub-1")
+		self.add_linked_user("john@example.com", "sub-2")
+
+		report = self.run_reconciliation(
+			[
+				self.directory_user("jane@example.com", "sub-1"),
+				self.directory_user("john@example.com", "sub-2"),
+			]
+		)
+
+		self.assertEqual(service.get("enabled"), 1)
+		self.assertEqual(report["absent"], [])
+
+	def test_a_disabled_local_user_is_not_swept_in(self):
+		"""The widened sweep is about the people currently working here."""
+		self.config.reconcile_all_users = 1
+		gone = self.add_local_user("gone@example.com", enabled=0)
+		self.add_linked_user("jane@example.com", "sub-1")
+
+		report = self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
+
+		self.assertNotIn(
+			"gone@example.com",
+			[entry["user"] for entry in report["absent"] + report["settled"]],
+		)
+		self.assertEqual(gone.get("enabled"), 0)
+
+	def test_a_disabled_linked_user_is_still_swept_in_so_they_can_return(self):
+		self.config.reconcile_all_users = 1
+		self.config.disable_unmapped_users = 1
+		user = self.add_linked_user("jane@example.com", "sub-1", enabled=0)
+
+		self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
+
+		self.assertEqual(user.get("enabled"), 1)
+
+	def test_the_mass_change_guard_still_applies_to_the_wider_set(self):
+		self.config.reconcile_all_users = 1
+		for index in range(4):
+			self.add_local_user(f"local{index}@example.com")
+		self.add_linked_user("jane@example.com", "sub-1")
+
+		with self.assertRaises(Exception):
+			self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
+
+		self.assertEqual(self.frappe.user_store.users["local0@example.com"].get("enabled"), 1)

@@ -7,6 +7,8 @@ frappe.ui.form.on('OIDC Extended Configuration', {
     },
 
     refresh: function(frm) {
+        set_absent_user_actions(frm);
+
         if (frm.is_new()) {
             return;
         }
@@ -14,10 +16,29 @@ frappe.ui.form.on('OIDC Extended Configuration', {
         frm.add_custom_button(__('Fetch Groups From Provider'), function() {
             fetch_groups(frm);
         });
+    },
+
+    manage_roles: function(frm) {
+        set_absent_user_actions(frm);
     }
 });
 
-// Reads the group names the identity provider uses and adds the missing ones to both
+// "Remove All Roles" is only offered where this app manages the roles. On a site that
+// uses the identity provider to sign people in and to close their accounts, offering it
+// invites somebody to strip roles the ERP owns.
+function set_absent_user_actions(frm) {
+    const options = frm.doc.manage_roles
+        ? ['Report Only', 'Remove All Roles', 'Disable User']
+        : ['Report Only', 'Disable User'];
+
+    frm.set_df_property('absent_user_action', 'options', options.join('\n'));
+
+    if (!frm.doc.manage_roles && frm.doc.absent_user_action === 'Remove All Roles') {
+        frm.set_value('absent_user_action', 'Disable User');
+    }
+}
+
+// Reads the group names the identity provider uses and adds the missing ones to the
 // mapping tables, with the profile left blank. The names are typed by hand otherwise,
 // against a list that lives in another system, and a typo is silent until somebody
 // logs in with no roles.

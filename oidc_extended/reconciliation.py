@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import re
+from contextlib import contextmanager
 
 import frappe
 from frappe.rate_limiter import rate_limit
@@ -30,6 +31,7 @@ from oidc_extended.callback import (
 	enable_user,
 	has_no_mapped_group,
 	managed_roles,
+	managing_roles,
 	normalize_groups,
 	resolve_module_profile,
 	resolve_role_profiles,
@@ -41,6 +43,17 @@ from oidc_extended.directory import EmptyDirectoryError, get_directory
 REPORT_ONLY = "Report Only"
 REMOVE_ALL_ROLES = "Remove All Roles"
 DISABLE_USER = "Disable User"
+
+# How long a run has to wait, per "Frequency". The scheduler calls the entry point
+# every quarter of an hour and the task decides whether it is due, so the configured
+# frequency is honoured however often the scheduler happens to call - and changing it
+# takes effect at once rather than at the next migrate.
+FREQUENCY_SECONDS = {
+	"Every 15 Minutes": 15 * 60,
+	"Hourly": 60 * 60,
+	"Daily": 24 * 60 * 60,
+}
+DEFAULT_FREQUENCY_SECONDS = FREQUENCY_SECONDS["Daily"]
 
 # A run that would de-provision most of the linked users is far more likely to be
 # reading a broken directory response than a mass departure.
@@ -78,10 +91,14 @@ def reconcile(provider: str, dry_run: int = 1) -> dict:
 def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 	configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider)
 	absent_user_action = configuration.get("absent_user_action") or REPORT_ONLY
+	manage_roles = managing_roles(configuration)
 	disable_unmapped = disabling_unmapped_users(configuration)
-	managed = managed_roles(configuration)
+	managed = managed_roles(configuration) if manage_roles else set()
 
-	directory_users = get_directory(configuration).get_users()
+	# The groups are only worth the request when something reads them: on Keycloak they
+	# cost one call per user, which is what stands between a fifteen-minute sweep and an
+	# hourly one on a realm of any size.
+	directory_users = get_directory(configuration).get_users(with_groups=manage_roles)
 
 	if not directory_users:
 		# Never act on an empty answer: it is a broken API call far more often than an
@@ -105,7 +122,7 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		"skipped": [],
 	}
 
-	for user_name, subject in linked_users(provider):
+	for user_name, subject in users_to_reconcile(provider, configuration):
 		if user_name in RESERVED_USERS:
 			report["skipped"].append({"user": user_name, "reason": "reserved account"})
 			continue
@@ -115,19 +132,26 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		entry = by_subject.get(subject) or by_email.get((user.email or "").lower())
 
 		if not entry:
-			if nothing_left_to_do(user, absent_user_action):
+			if nothing_left_to_do(user, absent_user_action, manage_roles):
 				report["settled"].append({"user": user_name, "reason": "absent"})
 			else:
 				report["absent"].append({"user": user_name, "action": absent_user_action})
 			continue
 
 		if not entry["enabled"]:
-			if nothing_left_to_do(user, absent_user_action):
+			if nothing_left_to_do(user, absent_user_action, manage_roles):
 				report["settled"].append({"user": user_name, "reason": "disabled at the provider"})
 			else:
 				report["disabled_at_provider"].append(
 					{"user": user_name, "action": absent_user_action}
 				)
+			continue
+
+		if not manage_roles:
+			# Sign-in and offboarding only. The directory still vouches for them, and
+			# what they may do here is not this app's business - so the groups are not
+			# even read.
+			report["unchanged"].append(user_name)
 			continue
 
 		groups = normalize_groups(entry["groups"])
@@ -138,7 +162,7 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		# The same evaluation the login does, so that a scheduled run and a login reach
 		# the same verdict about the same user.
 		if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
-			if nothing_left_to_do(user, DISABLE_USER):
+			if nothing_left_to_do(user, DISABLE_USER, manage_roles):
 				report["settled"].append({"user": user_name, "reason": "no mapped group"})
 			else:
 				report["unmapped"].append({"user": user_name, "groups": entry["groups"]})
@@ -179,6 +203,43 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 	return report
 
 
+def users_to_reconcile(provider: str, configuration) -> list[tuple[str, str | None]]:
+	"""The users this run should look at, and the subject each is known by, if any.
+
+	By default only those who have signed in through this provider: a social login row
+	is the one thing tying a Frappe user to a directory entry, so anyone without one is
+	not this app's to judge.
+
+	That is too narrow for a site whose reason for running this is offboarding. An
+	account somebody created here by hand belongs to a real person who is in the
+	directory, and when they leave, nothing closes it. With "Reconcile Every Enabled
+	User" on, every enabled user is considered and matched by email address instead.
+
+	The cost of that is real and is why it is off by default: a user the directory has
+	never heard of cannot be told apart from one who has left. Service accounts and
+	integrations go in the exemption list.
+
+	Disabled users that are linked are still included, so that one the provider vouches
+	for again can be enabled again. A disabled user who is not linked is left out - the
+	widened sweep is about the people currently working here.
+	"""
+	subjects = dict(linked_users(provider))
+	exempt = {
+		row.get("user")
+		for row in configuration.get("reconciliation_exempt_users", [])
+		if row.get("user")
+	}
+
+	names = set(subjects)
+
+	if frappe.utils.cint(configuration.get("reconcile_all_users")):
+		names.update(
+			frappe.get_all("User", filters={"enabled": 1}, pluck="name", limit_page_length=0)
+		)
+
+	return sorted((name, subjects.get(name)) for name in names if name not in exempt)
+
+
 def linked_users(provider: str) -> list[tuple[str, str]]:
 	"""The Frappe users that have signed in through this provider, and their subjects.
 
@@ -195,7 +256,7 @@ def linked_users(provider: str) -> list[tuple[str, str]]:
 	return [(row["parent"], row["userid"]) for row in rows]
 
 
-def nothing_left_to_do(user, action: str) -> bool:
+def nothing_left_to_do(user, action: str, manage_roles: bool = True) -> bool:
 	"""Whether an earlier run has already applied this action to this user.
 
 	Reporting somebody every run is not harmless. They are written again each time -
@@ -212,6 +273,11 @@ def nothing_left_to_do(user, action: str) -> bool:
 
 	if action == DISABLE_USER and user.enabled:
 		return False
+
+	if not manage_roles:
+		# The entitlements are the ERP's, so they are not evidence of anything here.
+		# Whether the account is closed is the whole of what was asked for.
+		return action == DISABLE_USER
 
 	return not (
 		current_role_profiles(user) or user.get("roles") or user.get("module_profile")
@@ -236,26 +302,29 @@ def guard_against_mass_change(report: dict):
 
 	if affected / report["linked_users"] > MAX_AFFECTED_FRACTION:
 		raise EmptyDirectoryError(
-			f"{affected} of {report['linked_users']} users linked to {report['provider']} are "
-			f"missing from the directory, disabled there, or in no group this site maps. "
-			f"Refusing to act on what looks like an incomplete answer; run a dry run and "
-			f"check the directory."
+			f"{affected} of the {report['linked_users']} users this run of {report['provider']} "
+			f"considered are missing from the directory, disabled there, or in no group this "
+			f"site maps. Refusing to act on what looks like an incomplete answer; run a dry "
+			f"run and check the directory."
 		)
 
 
 def apply_report(report, configuration, absent_user_action, by_subject, by_email):
 	"""Writes what the report describes."""
+	manage_roles = managing_roles(configuration)
+
 	for entry in report["absent"] + report["disabled_at_provider"]:
-		deprovision(entry["user"], absent_user_action)
+		deprovision(entry["user"], absent_user_action, strip_entitlements=manage_roles)
 
 	for entry in report["unmapped"]:
 		deprovision(
 			entry["user"],
 			DISABLE_USER,
 			reason=f"none of the groups {entry['groups']} grants access to this site",
+			strip_entitlements=manage_roles,
 		)
 
-	managed = managed_roles(configuration)
+	managed = managed_roles(configuration) if manage_roles else set()
 
 	for change in report["roles_changed"]:
 		user = frappe.get_doc("User", change["user"])
@@ -280,10 +349,22 @@ def apply_report(report, configuration, absent_user_action, by_subject, by_email
 	frappe.db.commit()
 
 
-def deprovision(user_name: str, action: str, reason: str = ""):
-	"""Applies the configured action to a user the directory no longer vouches for."""
+def deprovision(user_name: str, action: str, reason: str = "", strip_entitlements: bool = True):
+	"""Applies the configured action to a user the directory no longer vouches for.
+
+	`strip_entitlements` is off in the sign-in and offboarding mode, where the account
+	is closed and the roles are left exactly as the ERP set them. A closed account
+	grants nothing, and reopening one is a decision somebody makes here.
+	"""
 	if action == REPORT_ONLY:
 		frappe.logger().info(f"Reconciliation: {user_name} is gone from the directory (report only).")
+		return
+
+	if action != DISABLE_USER and not strip_entitlements:
+		# "Remove All Roles" where the roles are not this app's to remove. The form
+		# refuses the combination; this makes sure it cannot write a record to achieve
+		# nothing if it ever arrives another way.
+		frappe.logger().info(f"Reconciliation has nothing to apply to {user_name}.")
 		return
 
 	user = frappe.get_doc("User", user_name)
@@ -306,10 +387,11 @@ def deprovision(user_name: str, action: str, reason: str = ""):
 	if action == DISABLE_USER:
 		disable_user(user, reason or "the directory no longer vouches for them")
 
-	# Strip entitlements in both cases: a disabled user that is re-enabled locally
-	# should not come back with the roles they had when they left.
-	apply_role_profiles(user, [])
-	user.module_profile = None
+	if strip_entitlements:
+		# A disabled user that is re-enabled locally should not come back with the roles
+		# they had when they left.
+		apply_role_profiles(user, [])
+		user.module_profile = None
 
 	user.save()
 	clear_sessions(user=user_name, force=True)
@@ -318,7 +400,15 @@ def deprovision(user_name: str, action: str, reason: str = ""):
 
 
 def run_scheduled_reconciliation():
-	"""Scheduler entry point: runs each configuration that is due."""
+	"""Scheduler entry point: runs each configuration that is due.
+
+	Registered under a cron of every fifteen minutes rather than under Frappe's hourly
+	event, because the scheduler cannot call something more often than the event it is
+	registered under - a "Frequency" shorter than the event would have been a setting
+	that could not take effect. Which of those quarter-hours actually does anything is
+	`is_due`, so the frequency is honoured wherever the scheduler happens to land and a
+	change to it applies from the next quarter-hour rather than from the next migrate.
+	"""
 	for provider in frappe.get_all("OIDC Extended Configuration", pluck="name"):
 		configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider)
 
@@ -329,29 +419,66 @@ def run_scheduled_reconciliation():
 			continue
 
 		try:
-			run_reconciliation(provider, dry_run=False)
-			frappe.db.set_value(
-				"OIDC Extended Configuration",
-				provider,
-				"last_reconciled_on",
-				frappe.utils.now(),
-				update_modified=False,
+			with reconciliation_lock(provider):
+				# Claimed before the work starts, not after it finishes: a run that
+				# takes longer than the interval would otherwise leave the slot open
+				# for the next quarter-hour to walk into.
+				frappe.db.set_value(
+					"OIDC Extended Configuration",
+					provider,
+					"last_reconciled_on",
+					frappe.utils.now(),
+					update_modified=False,
+				)
+				frappe.db.commit()
+
+				run_reconciliation(provider, dry_run=False)
+				frappe.db.commit()
+		except AlreadyRunningError:
+			frappe.logger().info(
+				f"A reconciliation of {provider} is already running; leaving it to finish."
 			)
-			frappe.db.commit()
 		except Exception:
 			frappe.db.rollback()
 			frappe.logger().error(f"Reconciliation of {provider} failed: {frappe.get_traceback()}")
 
 
+class AlreadyRunningError(Exception):
+	"""Another reconciliation of this provider holds the lock."""
+
+
+@contextmanager
+def reconciliation_lock(provider: str):
+	"""Holds a provider to one reconciliation at a time.
+
+	Frappe will not queue this job while a previous one is still queued or running
+	(`ScheduledJobType.is_job_in_queue`), so the scheduled runs are already serialised.
+	This covers the rest: a run started by hand from the console or the API while the
+	scheduled one is in flight. Two sweeps writing the same users at once would have
+	each acting on what the other had half done.
+	"""
+	from frappe.utils.file_lock import LockTimeoutError
+	from frappe.utils.synchronization import filelock
+
+	try:
+		with filelock(f"oidc_extended_reconciliation_{provider}", timeout=0):
+			yield
+	except LockTimeoutError:
+		raise AlreadyRunningError(provider)
+
+
 def is_due(configuration) -> bool:
+	"""Whether enough time has passed since the last run for another to be allowed."""
 	last_run = configuration.get("last_reconciled_on")
 
 	if not last_run:
 		return True
 
-	hours = 1 if configuration.get("reconciliation_frequency") == "Hourly" else 24
+	wait = FREQUENCY_SECONDS.get(
+		configuration.get("reconciliation_frequency"), DEFAULT_FREQUENCY_SECONDS
+	)
 
-	return frappe.utils.time_diff_in_hours(frappe.utils.now(), last_run) >= hours
+	return frappe.utils.time_diff_in_seconds(frappe.utils.now(), last_run) >= wait
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
@@ -493,17 +620,26 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 	if user_name in RESERVED_USERS:
 		return {"user": user_name, "action": "skipped"}
 
-	entry = get_directory(configuration).get_user(subject=subject, email=email)
+	entry = get_directory(configuration).get_user(
+		subject=subject, email=email, with_groups=managing_roles(configuration)
+	)
 	user = frappe.get_doc("User", user_name)
 	user.flags.ignore_permissions = True
 
+	manage_roles = managing_roles(configuration)
+
 	if not entry or not entry["enabled"]:
-		if nothing_left_to_do(user, absent_user_action):
+		if nothing_left_to_do(user, absent_user_action, manage_roles):
 			return {"user": user_name, "action": "unchanged"}
 
-		deprovision(user_name, absent_user_action)
+		deprovision(user_name, absent_user_action, strip_entitlements=manage_roles)
 		frappe.db.commit()
 		return {"user": user_name, "action": absent_user_action}
+
+	if not manage_roles:
+		# Sign-in and offboarding only: the directory still has them, so there is
+		# nothing this app has an opinion about.
+		return {"user": user_name, "action": "unchanged"}
 
 	groups = normalize_groups(entry["groups"])
 	role_profiles = resolve_role_profiles(configuration, groups)
@@ -513,7 +649,7 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 	disable_unmapped = disabling_unmapped_users(configuration)
 
 	if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
-		if nothing_left_to_do(user, DISABLE_USER):
+		if nothing_left_to_do(user, DISABLE_USER, manage_roles):
 			return {"user": user_name, "action": "unchanged"}
 
 		deprovision(

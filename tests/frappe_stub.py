@@ -8,6 +8,7 @@ on it (single-use OAuth state, `User` autonamed by email, role profiles replacin
 on save, permlevel-guarded fields), so a passing test says something about the real thing.
 """
 
+import contextlib
 import sys
 import types
 
@@ -404,6 +405,21 @@ def install():
 				return [doc.get(f) for f in fieldname]
 			return doc.get(fieldname)
 
+		def set_value(self, doctype, name, fieldname, value=None, **kwargs):
+			doc = (
+				frappe.user_store.users.get(name)
+				if doctype == "User"
+				else frappe.docs.get((doctype, name))
+			)
+
+			if doc is None:
+				return
+
+			for key, new_value in (
+				fieldname.items() if isinstance(fieldname, dict) else [(fieldname, value)]
+			):
+				doc.set(key, new_value)
+
 		def get_all(self, doctype, filters=None, fields=None, pluck=None, **kwargs):
 			return frappe.get_all(doctype, filters=filters, fields=fields, pluck=pluck, **kwargs)
 
@@ -453,8 +469,21 @@ def install():
 		set_log_level=lambda level: frappe.log_level_calls.append(level)
 	)
 	utils.cint = lambda v: int(v or 0)
-	utils.now = lambda: "2026-08-24 12:00:00"
+	utils.now = lambda: frappe.now_value
+	frappe.now_value = "2026-08-24 12:00:00"
 	utils.time_diff_in_hours = lambda a, b: 999
+
+	def time_diff_in_seconds(end, start):
+		"""As frappe.utils.time_diff_in_seconds does, for the two formats used here."""
+		from datetime import datetime
+
+		def parse(value):
+			text = str(value)[:19]
+			return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+
+		return (parse(end) - parse(start)).total_seconds()
+
+	utils.time_diff_in_seconds = time_diff_in_seconds
 
 	def escape_html(text):
 		"""As frappe.utils.escape_html does: the message of a web page is raw HTML."""
@@ -468,6 +497,30 @@ def install():
 	frappe.utils = utils
 
 	# -- frappe.utils.oauth ------------------------------------------------------
+	# -- frappe.utils.synchronization / frappe.utils.file_lock -------------------
+	file_lock = types.ModuleType("frappe.utils.file_lock")
+
+	class LockTimeoutError(Exception):
+		pass
+
+	file_lock.LockTimeoutError = LockTimeoutError
+
+	synchronization = types.ModuleType("frappe.utils.synchronization")
+	frappe.held_locks = []
+	frappe.locks_are_taken = False
+
+	@contextlib.contextmanager
+	def filelock(lock_name, timeout=30, is_global=False):
+		if frappe.locks_are_taken:
+			raise LockTimeoutError(lock_name)
+
+		frappe.held_locks.append(lock_name)
+		yield
+
+	synchronization.filelock = filelock
+	frappe.utils.file_lock = file_lock
+	frappe.utils.synchronization = synchronization
+
 	oauth = types.ModuleType("frappe.utils.oauth")
 	OAUTH_LOGIN_FLOW_CACHE_PREFIX = "frappe_oauth_login"
 
@@ -581,6 +634,8 @@ def install():
 		("frappe", frappe),
 		("frappe.utils", utils),
 		("frappe.utils.oauth", oauth),
+		("frappe.utils.file_lock", file_lock),
+		("frappe.utils.synchronization", synchronization),
 		("frappe.sessions", sessions),
 		("frappe.rate_limiter", rate_limiter),
 		("frappe.www", www),

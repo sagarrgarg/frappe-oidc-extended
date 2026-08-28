@@ -12,6 +12,7 @@ Features:
 - Group Multi-Mapping: assign roles and modules by mapping OIDC *groups* to Frappe **Role Profiles**, individual **Roles** and **Module Profiles**.
 - Verification of the id token against the signing keys, audience and issuer of the identity provider.
 - Customizable claim names.
+- A switch for sites that want single sign-on and offboarding and nothing else: the identity provider opens and closes the account, the ERP decides what it may do.
 - Fallback profiles (role and module) for users matching no mapped group, and a choice of what to do when there is no fallback either.
 - Disabling the Frappe account, not only the session, of a user whose groups grant nothing here - and enabling it again when they do.
 - Importing the group names from the identity provider, so the mappings are filled in from its own vocabulary rather than typed by hand.
@@ -164,6 +165,40 @@ A user's first and last name follow the claims on each login, when the provider 
 them. A claim the provider omits leaves the name on record alone.
 
 **Roles and modules**
+
+There are two ways to run this app, and the first decision is which.
+
+| | **Full management** | **Sign-in and offboarding only** |
+| --- | --- | --- |
+| Manage Roles From The Identity Provider | On (the default) | Off |
+| Who decides roles | The groups in the token | Whoever runs the ERP |
+| Single sign-on | Yes | Yes |
+| Accounts created on first login | Yes | Yes |
+| Account closed when they leave the directory | Yes | Yes |
+| Everything below in this section | In effect | Not read, not written, and hidden in the form |
+
+The second mode exists because keeping directory groups in step with ERP roles is work,
+and below a certain size it is more work than the mapping saves. The honest
+configuration for such a site is not an empty mapping table - which still runs the
+mapping code, and still has an opinion the moment somebody half-fills it in - but no
+mapping at all. With the switch off, none of what follows runs: not the mappings, not
+the fallbacks, not **When No Group Matches**, not **Disable Users With No Mapped
+Group**. A login signs the person in, creates their account if it is new, and leaves
+every role the ERP gave them exactly as it found them.
+
+What still happens in that mode is the part that cannot be done by hand reliably:
+somebody removed from the directory has their Frappe account disabled and their sessions
+ended, on the schedule below. `Report Only` and `Disable User` are the only two actions
+offered for it, because there are no roles of this app's to remove.
+
+One wrinkle worth knowing, and it is Frappe's rather than this app's: saving a user
+re-derives their roles from their **Role Profile** if they have one assigned
+(`User.populate_role_profile_roles`). So the save that disables somebody re-derives
+their roles too. Roles held alongside a profile are not a state Frappe keeps in any
+case - which is the reason to assign roles rather than profiles on a site that manages
+them by hand.
+
+The rest of this section applies to the first mode.
 
 Map a group to a Role Profile, to individual Roles, and optionally to a Module Profile.
 Fallback profiles apply when no mapped group matches. Groups are matched as exact
@@ -369,7 +404,9 @@ provider on a schedule, under **Reconciliation** on the configuration:
 | Setting | Meaning |
 | --- | --- |
 | Enable Reconciliation | Off by default. When on, the provider is asked which users still exist, are still enabled, and are in which groups. |
-| Frequency | Daily or hourly. The scheduler wakes hourly and skips providers that are not due. |
+| Frequency | `Daily`, `Hourly` or `Every 15 Minutes`. The scheduler calls the task every quarter of an hour and the task returns immediately unless that provider is due, so the frequency is honoured whenever the scheduler happens to land, a change takes effect from the next quarter-hour rather than the next migrate, and a run that overruns its interval is not joined by a second one. |
+| Reconcile Every Enabled User | Off by default, in which case only users who have signed in through this provider are considered - a social login record is the one thing tying a Frappe user to a directory entry. On, every enabled user is matched to the directory by email instead, so an account somebody made here by hand is closed too when that person leaves. Read the warning below before turning it on. |
+| Never Reconcile These Users | The exemptions that make the above safe. |
 | When A User Is Gone Or Disabled | `Report Only` (log it), `Remove All Roles` (keep the account, strip entitlements), or `Disable User`. |
 | Disable Users With No Mapped Group | Set under Roles, but applied here too: a run disables a user whose groups resolve to nothing, and enables one the directory vouches for again. A scheduled run and a login reach the same verdict about the same user. |
 | Directory Type / URL | `Keycloak` with the realm URL, or `Authentik` with its base URL. |
@@ -401,6 +438,21 @@ here.
 Group changes are applied the same way, which is what closes the other half of the gap:
 a user removed from a mapped group has their role profiles recomputed and their
 sessions ended, without waiting for a login that may never come.
+
+Two things about the shorter cycles. A run that fails does not retry immediately: the
+slot is claimed before the work starts, so a worker killed half way through does not
+come straight back and redo it - the next attempt is at the next interval, or whenever
+somebody runs it by hand. And on Keycloak the groups cost one API call per user, because
+the user list does not carry them; with role management off nothing reads them, so they
+are not asked for, which is what makes a quarter-hourly sweep of a real realm reasonable
+rather than thousands of calls a day.
+
+**Before turning on Reconcile Every Enabled User**, understand what it cannot know. A
+user the directory has never heard of is indistinguishable from one who has left: a
+service account, an integration, a contractor set up locally. Every one of them reads as
+absent and is disabled on the first run. List them under **Never Reconcile These Users**
+first, and use the dry run below to see who would be caught. The guard that refuses a run
+affecting more than half the users is the backstop, not the plan.
 
 **Run it as a dry run first.** From the console or a client:
 

@@ -1,0 +1,39 @@
+{
+ "actions": [],
+ "creation": "2026-08-28 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "user",
+  "reason"
+ ],
+ "fields": [
+  {
+   "description": "A user the reconciliation must never act on. Needed only when every enabled user is reconciled: an account the directory has never heard of - a service user, an integration, a contractor set up by hand - otherwise reads as somebody who has left.",
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "User",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Reason"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-28 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "OIDC Extended",
+ "name": "OIDC Reconciliation Exemption",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
