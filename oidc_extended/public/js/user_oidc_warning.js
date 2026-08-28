@@ -4,7 +4,7 @@
 // There are two ways to run this app. Where it maps groups to roles, an edit made here
 // is replaced at the user's next login, so the fields it writes are locked and the form
 // says why. Where it is used to sign people in and to close their accounts when they
-// leave - "Manage Roles From The Identity Provider" off - the roles are the ERP's, and
+// leave - "Use Groups From The Identity Provider" off - the roles are the ERP's, and
 // locking them would stop exactly the work that mode exists for.
 //
 // The fields differ by Frappe version - v15 stores a single role profile in

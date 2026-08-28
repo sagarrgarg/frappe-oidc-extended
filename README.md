@@ -166,11 +166,14 @@ them. A claim the provider omits leaves the name on record alone.
 
 **Roles and modules**
 
-There are two ways to run this app, and the first decision is which.
+There are two ways to run this app, and one field at the top of the configuration -
+**Use Groups From The Identity Provider** - decides which. Everything that depends on it
+is hidden while it is off, including the groups claim itself, so the form shows only what
+is in effect.
 
 | | **Full management** | **Sign-in and offboarding only** |
 | --- | --- | --- |
-| Manage Roles From The Identity Provider | On (the default) | Off |
+| Use Groups From The Identity Provider | On (the default) | Off |
 | Who decides roles | The groups in the token | Whoever runs the ERP |
 | Single sign-on | Yes | Yes |
 | Accounts created on first login | Yes | Yes |
@@ -181,7 +184,8 @@ The second mode exists because keeping directory groups in step with ERP roles i
 and below a certain size it is more work than the mapping saves. The honest
 configuration for such a site is not an empty mapping table - which still runs the
 mapping code, and still has an opinion the moment somebody half-fills it in - but no
-mapping at all. With the switch off, none of what follows runs: not the mappings, not
+mapping at all. With the switch off, the groups claim is not read and none of what
+follows runs: not the mappings, not
 the fallbacks, not **When No Group Matches**, not **Disable Users With No Mapped
 Group**. A login signs the person in, creates their account if it is new, and leaves
 every role the ERP gave them exactly as it found them.

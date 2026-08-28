@@ -3,4 +3,4 @@
 [post_model_sync]
 oidc_extended.patches.v1_0.preserve_user_provisioning_behaviour
 oidc_extended.patches.v1_0.preserve_username_matching
-oidc_extended.patches.v1_0.preserve_role_management
+oidc_extended.patches.v1_0.preserve_group_management

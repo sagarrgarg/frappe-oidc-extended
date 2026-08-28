@@ -21,14 +21,15 @@ def providers_managing_roles() -> list[str]:
 	a user who cannot read the configuration - and all it discloses is a provider name
 	they can already see on their own social login row.
 
-	A configuration that predates "Manage Roles From The Identity Provider" has no value
-	stored, and this app has always managed roles, so an unset field counts as on - the
-	same reading `managing_roles` takes on the server.
+	Which is the "Use Groups From The Identity Provider" switch: reading the groups is
+	what leads to writing the roles. A configuration that predates it has no value
+	stored, and this app has always read groups, so an unset field counts as on - the
+	same reading `using_groups` takes on the server.
 	"""
 	return [
 		row["name"]
 		for row in frappe.get_all(
-			"OIDC Extended Configuration", fields=["name", "manage_roles"], limit_page_length=0
+			"OIDC Extended Configuration", fields=["name", "use_groups"], limit_page_length=0
 		)
-		if row.get("manage_roles") is None or frappe.utils.cint(row.get("manage_roles"))
+		if row.get("use_groups") is None or frappe.utils.cint(row.get("use_groups"))
 	]

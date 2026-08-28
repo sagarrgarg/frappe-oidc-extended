@@ -28,29 +28,29 @@ class TestProvidersManagingRoles(CallbackTestCase):
 		return doc
 
 	def test_a_provider_that_manages_roles_is_listed(self):
-		self.config.manage_roles = 1
+		self.config.use_groups = 1
 
 		self.assertEqual(self.boot.providers_managing_roles(), [PROVIDER])
 
 	def test_a_provider_that_does_not_is_left_out(self):
-		self.config.manage_roles = 0
+		self.config.use_groups = 0
 
 		self.assertEqual(self.boot.providers_managing_roles(), [])
 
 	def test_a_configuration_predating_the_setting_counts_as_managing(self):
 		"""This app has always managed roles, so an unset field is not a decision."""
-		self.config._data.pop("manage_roles", None)
+		self.config._data.pop("use_groups", None)
 
 		self.assertEqual(self.boot.providers_managing_roles(), [PROVIDER])
 
 	def test_each_provider_is_answered_for_separately(self):
-		self.config.manage_roles = 0
-		self.add_provider("keycloak", manage_roles=1)
+		self.config.use_groups = 0
+		self.add_provider("keycloak", use_groups=1)
 
 		self.assertEqual(self.boot.providers_managing_roles(), ["keycloak"])
 
 	def test_the_answer_is_put_where_the_desk_looks_for_it(self):
-		self.config.manage_roles = 1
+		self.config.use_groups = 1
 		bootinfo = types.SimpleNamespace()
 
 		self.boot.boot_session(bootinfo)

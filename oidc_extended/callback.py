@@ -610,7 +610,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
     frappe.logger().info(f"Allowing all changes on the user {email} without checking permissions.")
     user.flags.ignore_permissions = True
 
-    if managing_roles(oidc_extended_configuration):
+    if using_groups(oidc_extended_configuration):
         refused, entitlements_changed = apply_entitlements(
             user, existing_user_name, oidc_extended_configuration, groups, email
         )
@@ -1372,8 +1372,8 @@ def apply_role_profiles(user, role_profiles: list[str], grants_govern_roles: boo
     return changed
 
 
-def managing_roles(configuration) -> bool:
-    """Whether this provider decides the user's roles at all.
+def using_groups(configuration) -> bool:
+    """Whether the groups in the token are read at all.
 
     On unless explicitly turned off, so a site that has not asked for anything else
     behaves exactly as it always has.
@@ -1385,12 +1385,14 @@ def managing_roles(configuration) -> bool:
     an empty mapping table but no mapping at all. None of the mapping code runs on such
     a site, so nothing in it can reach a role the ERP owns.
     """
-    manage = configuration.get("manage_roles")
+    use_groups = configuration.get("use_groups")
 
-    if manage is None:
+    if use_groups is None:
+        # A configuration that predates the switch. This app has always read groups, so
+        # an unset field is not a decision anybody made.
         return True
 
-    return bool(frappe.utils.cint(manage))
+    return bool(frappe.utils.cint(use_groups))
 
 
 def disabling_unmapped_users(configuration) -> bool:
@@ -1408,7 +1410,7 @@ def disabling_unmapped_users(configuration) -> bool:
     provider, in both directions: an account disabled by hand here is enabled again at
     the next login if the groups grant something.
     """
-    if not managing_roles(configuration):
+    if not using_groups(configuration):
         # It is a rule about group membership, and this site does not read groups. The
         # callers skip the whole question, but a rule that only holds because of where
         # it is called from is not a rule.
@@ -1525,7 +1527,7 @@ def apply_entitlements(user, existing_user_name, configuration, groups, email) -
     response has already been written and the caller must stop - and whether the
     user's entitlements moved, which is what decides if their other sessions are ended.
 
-    Nothing calls this when "Manage Roles From The Identity Provider" is off. That is
+    Nothing calls this when "Use Groups From The Identity Provider" is off. That is
     the whole of what that switch does, and why it is a switch rather than a set of
     conditions: none of the mapping code runs at all on such a site, so none of it can
     reach a role the ERP owns - not through a mapping somebody left half filled in, and

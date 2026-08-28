@@ -9,7 +9,7 @@ frappe.ui.form.on('OIDC Extended Configuration', {
     refresh: function(frm) {
         set_absent_user_actions(frm);
 
-        if (frm.is_new() || !frm.doc.manage_roles) {
+        if (frm.is_new() || !frm.doc.use_groups) {
             // Nothing to fill in: the mapping tables are not in effect on this site.
             return;
         }
@@ -19,7 +19,7 @@ frappe.ui.form.on('OIDC Extended Configuration', {
         });
     },
 
-    manage_roles: function(frm) {
+    use_groups: function(frm) {
         set_absent_user_actions(frm);
         frm.refresh();
     }
@@ -29,13 +29,13 @@ frappe.ui.form.on('OIDC Extended Configuration', {
 // uses the identity provider to sign people in and to close their accounts, offering it
 // invites somebody to strip roles the ERP owns.
 function set_absent_user_actions(frm) {
-    const options = frm.doc.manage_roles
+    const options = frm.doc.use_groups
         ? ['Report Only', 'Remove All Roles', 'Disable User']
         : ['Report Only', 'Disable User'];
 
     frm.set_df_property('absent_user_action', 'options', options.join('\n'));
 
-    if (!frm.doc.manage_roles && frm.doc.absent_user_action === 'Remove All Roles') {
+    if (!frm.doc.use_groups && frm.doc.absent_user_action === 'Remove All Roles') {
         frm.set_value('absent_user_action', 'Disable User');
     }
 }

@@ -8,6 +8,7 @@
  "engine": "InnoDB",
  "field_order": [
   "provider",
+  "use_groups",
   "claims_section",
   "given_name_claim_name",
   "family_name_claim_name",
@@ -24,7 +25,6 @@
   "jwks_url",
   "issuer",
   "roles_section",
-  "manage_roles",
   "fallback_role_profiles",
   "group_role_mappings",
   "group_role_grants",
@@ -59,6 +59,13 @@
    "unique": 1
   },
   {
+   "default": "1",
+   "description": "The one switch that decides how much of this app is in use. On, the groups in the token decide the user's role profiles, roles and module profile, and the Roles and Modules sections below apply. Off, the groups claim is not read at all: the identity provider signs people in and closes their accounts when they leave the directory, and who has which role is decided in the ERP. Nothing in those sections is then read or written - not the mappings, not the fallbacks, not \"When No Group Matches\", not \"Disable Users With No Mapped Group\" - and they are hidden, because they do nothing. Keeping directory groups in step with ERP roles costs more than it saves at some sizes; this is the switch for that.",
+   "fieldname": "use_groups",
+   "fieldtype": "Check",
+   "label": "Use Groups From The Identity Provider"
+  },
+  {
    "fieldname": "claims_section",
    "fieldtype": "Section Break",
    "label": "Token Claims"
@@ -83,6 +90,7 @@
   },
   {
    "default": "groups",
+   "depends_on": "eval:doc.use_groups",
    "description": "The name of the claim that includes a list of user groups.",
    "fieldname": "groups_claim_name",
    "fieldtype": "Data",
@@ -155,19 +163,13 @@
    "label": "Issuer"
   },
   {
+   "depends_on": "eval:doc.use_groups",
    "fieldname": "roles_section",
    "fieldtype": "Section Break",
    "label": "Roles"
   },
   {
-   "default": "1",
-   "description": "On by default, and what this app has always done: the groups in the token decide the user's role profiles, roles and module profile. Turn it off for a site that uses the identity provider to sign people in and to close their accounts when they leave, and assigns roles in the ERP by hand. Nothing below is then read or written - not the mappings, not the fallbacks, not \"When No Group Matches\", not \"Disable Users With No Mapped Group\" - and a login leaves the roles the ERP gave someone exactly as they are. Keeping directory groups in step with ERP roles costs more than it saves at some sizes; this is the switch for that.",
-   "fieldname": "manage_roles",
-   "fieldtype": "Check",
-   "label": "Manage Roles From The Identity Provider"
-  },
-  {
-   "depends_on": "eval:doc.manage_roles",
+   "depends_on": "eval:doc.use_groups",
    "fieldname": "fallback_role_profiles",
    "fieldtype": "Table",
    "label": "Fallback Role Profiles",
@@ -175,7 +177,7 @@
    "description": "If a user has no matching group mappings, they will be assigned these fallback role profiles. Consider leaving this empty: a fallback grants permissions to a user the identity provider said nothing about, and it counts as a mapped group, so with \"Disable Users With No Mapped Group\" on nobody is ever unmapped and that option can never fire."
   },
   {
-   "depends_on": "eval:doc.manage_roles",
+   "depends_on": "eval:doc.use_groups",
    "fieldname": "group_role_mappings",
    "fieldtype": "Table",
    "label": "Group To Role Mappings",
@@ -183,7 +185,7 @@
    "description": "Map OIDC groups to ERPNext roles. This assigns permissions allowing users to access data and make changes based on their role."
   },
   {
-   "depends_on": "eval:doc.manage_roles",
+   "depends_on": "eval:doc.use_groups",
    "fieldname": "group_role_grants",
    "fieldtype": "Table",
    "label": "Group To Role Grants",
@@ -191,7 +193,7 @@
    "description": "Map OIDC groups to individual Roles. Where the profile mappings above compete - a role profile is a single Link on Frappe v15, so only the highest-priority match is assigned - these add up: a user in three mapped groups is granted all three roles, which is how \"everything an accounts user has, and approval on top\" is expressed. Only the roles named in this table are ever taken away, so a role granted here by hand in Frappe survives every login."
   },
   {
-   "depends_on": "eval:doc.manage_roles",
+   "depends_on": "eval:doc.use_groups",
    "default": "Keep Existing Roles",
    "description": "What to do when the identity provider returns no group that matches a mapping above and no fallback role profile is configured. \"Keep Existing Roles\" leaves the user's current roles untouched, \"Remove All Roles\" strips them so that removing a user from every group in the identity provider de-provisions them, and \"Deny Login\" refuses the login instead.",
    "fieldname": "unmapped_user_action",
@@ -200,7 +202,7 @@
    "options": "Keep Existing Roles\nRemove All Roles\nDeny Login"
   },
   {
-   "depends_on": "eval:doc.manage_roles",
+   "depends_on": "eval:doc.use_groups",
    "default": "0",
    "description": "Disables the Frappe account of a user whose groups match no mapping above or below, and grant no fallback profile. Refusing the login is not the same as closing the account: a user denied at the door keeps an enabled account, and with it its API keys, its seat and its local password, none of which the identity provider can revoke. This composes with the setting above rather than replacing it - that one still decides what happens to the roles - so leaving it on \"Keep Existing Roles\" and turning this on lets group membership gate access without this app ever touching anybody's roles. A user whose group comes back is enabled again at their next login, so a membership removed by mistake is not permanent; by the same token, an account disabled by hand here is reopened if the provider still vouches for it. Administrator, Guest and the last enabled System Manager are never disabled, and never stripped of their roles either - an enabled account without the role that makes it useful is the same lockout. The guard is logged when it fires. Off by default.",
    "fieldname": "disable_unmapped_users",
@@ -208,7 +210,7 @@
    "label": "Disable Users With No Mapped Group"
   },
   {
-   "depends_on": "eval:doc.manage_roles",
+   "depends_on": "eval:doc.use_groups",
    "fieldname": "modules_section",
    "fieldtype": "Section Break",
    "label": "Modules Mapping"

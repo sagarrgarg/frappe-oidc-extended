@@ -18,14 +18,14 @@ class OIDCExtendedConfiguration(Document):
 		management off should be made to say what it wants instead, not left with a
 		setting that reads as if it does something.
 		"""
-		if frappe.utils.cint(self.manage_roles):
+		if frappe.utils.cint(self.use_groups):
 			return
 
 		if self.absent_user_action == "Remove All Roles":
 			frappe.throw(
 				frappe._("\"When A User Is Gone Or Disabled\" cannot be {0} while {1} is off: this app does not manage the roles on this site, so it has none to remove. Choose {2} or {3}.").format(
 					frappe.bold(frappe._("Remove All Roles")),
-					frappe.bold(frappe._("Manage Roles From The Identity Provider")),
+					frappe.bold(frappe._("Use Groups From The Identity Provider")),
 					frappe.bold(frappe._("Report Only")),
 					frappe.bold(frappe._("Disable User")),
 				)
@@ -50,7 +50,7 @@ class OIDCExtendedConfiguration(Document):
 		profile on every save, so a role granted to a user who also has a profile is
 		gone by the time the save returns. The two tables are alternatives.
 		"""
-		if not frappe.utils.cint(self.manage_roles):
+		if not frappe.utils.cint(self.use_groups):
 			return
 
 		profiles = {row.group for row in (self.group_role_mappings or []) if row.role_profile}
@@ -75,7 +75,7 @@ class OIDCExtendedConfiguration(Document):
 		everyone who matches no group gets the fallback, which means the disable never
 		fires and the site believes it is gating access when it is not.
 		"""
-		if not frappe.utils.cint(self.manage_roles):
+		if not frappe.utils.cint(self.use_groups):
 			return
 
 		if not frappe.utils.cint(self.get("disable_unmapped_users")):

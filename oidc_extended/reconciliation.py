@@ -31,7 +31,7 @@ from oidc_extended.callback import (
 	enable_user,
 	has_no_mapped_group,
 	managed_roles,
-	managing_roles,
+	using_groups,
 	normalize_groups,
 	resolve_module_profile,
 	resolve_role_profiles,
@@ -91,14 +91,14 @@ def reconcile(provider: str, dry_run: int = 1) -> dict:
 def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 	configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider)
 	absent_user_action = configuration.get("absent_user_action") or REPORT_ONLY
-	manage_roles = managing_roles(configuration)
+	use_groups = using_groups(configuration)
 	disable_unmapped = disabling_unmapped_users(configuration)
-	managed = managed_roles(configuration) if manage_roles else set()
+	managed = managed_roles(configuration) if use_groups else set()
 
 	# The groups are only worth the request when something reads them: on Keycloak they
 	# cost one call per user, which is what stands between a fifteen-minute sweep and an
 	# hourly one on a realm of any size.
-	directory_users = get_directory(configuration).get_users(with_groups=manage_roles)
+	directory_users = get_directory(configuration).get_users(with_groups=use_groups)
 
 	if not directory_users:
 		# Never act on an empty answer: it is a broken API call far more often than an
@@ -132,14 +132,14 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		entry = by_subject.get(subject) or by_email.get((user.email or "").lower())
 
 		if not entry:
-			if nothing_left_to_do(user, absent_user_action, manage_roles):
+			if nothing_left_to_do(user, absent_user_action, use_groups):
 				report["settled"].append({"user": user_name, "reason": "absent"})
 			else:
 				report["absent"].append({"user": user_name, "action": absent_user_action})
 			continue
 
 		if not entry["enabled"]:
-			if nothing_left_to_do(user, absent_user_action, manage_roles):
+			if nothing_left_to_do(user, absent_user_action, use_groups):
 				report["settled"].append({"user": user_name, "reason": "disabled at the provider"})
 			else:
 				report["disabled_at_provider"].append(
@@ -147,7 +147,7 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 				)
 			continue
 
-		if not manage_roles:
+		if not use_groups:
 			# Sign-in and offboarding only. The directory still vouches for them, and
 			# what they may do here is not this app's business - so the groups are not
 			# even read.
@@ -162,7 +162,7 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		# The same evaluation the login does, so that a scheduled run and a login reach
 		# the same verdict about the same user.
 		if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
-			if nothing_left_to_do(user, DISABLE_USER, manage_roles):
+			if nothing_left_to_do(user, DISABLE_USER, use_groups):
 				report["settled"].append({"user": user_name, "reason": "no mapped group"})
 			else:
 				report["unmapped"].append({"user": user_name, "groups": entry["groups"]})
@@ -269,7 +269,7 @@ def linked_users(provider: str) -> list[tuple[str, str]]:
 	return [(row["parent"], row["userid"]) for row in rows]
 
 
-def nothing_left_to_do(user, action: str, manage_roles: bool = True) -> bool:
+def nothing_left_to_do(user, action: str, use_groups: bool = True) -> bool:
 	"""Whether an earlier run has already applied this action to this user.
 
 	Reporting somebody every run is not harmless. They are written again each time -
@@ -287,7 +287,7 @@ def nothing_left_to_do(user, action: str, manage_roles: bool = True) -> bool:
 	if action == DISABLE_USER and user.enabled:
 		return False
 
-	if not manage_roles:
+	if not use_groups:
 		# The entitlements are the ERP's, so they are not evidence of anything here, and
 		# whether the account is closed is the whole of what was asked for - which the
 		# check above has already answered. "Remove All Roles" has nothing to remove, so
@@ -327,20 +327,20 @@ def guard_against_mass_change(report: dict):
 
 def apply_report(report, configuration, absent_user_action, by_subject, by_email):
 	"""Writes what the report describes."""
-	manage_roles = managing_roles(configuration)
+	use_groups = using_groups(configuration)
 
 	for entry in report["absent"] + report["disabled_at_provider"]:
-		deprovision(entry["user"], absent_user_action, strip_entitlements=manage_roles)
+		deprovision(entry["user"], absent_user_action, strip_entitlements=use_groups)
 
 	for entry in report["unmapped"]:
 		deprovision(
 			entry["user"],
 			DISABLE_USER,
 			reason=f"none of the groups {entry['groups']} grants access to this site",
-			strip_entitlements=manage_roles,
+			strip_entitlements=use_groups,
 		)
 
-	managed = managed_roles(configuration) if manage_roles else set()
+	managed = managed_roles(configuration) if use_groups else set()
 
 	for change in report["roles_changed"]:
 		user = frappe.get_doc("User", change["user"])
@@ -637,22 +637,22 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 		return {"user": user_name, "action": "skipped"}
 
 	entry = get_directory(configuration).get_user(
-		subject=subject, email=email, with_groups=managing_roles(configuration)
+		subject=subject, email=email, with_groups=using_groups(configuration)
 	)
 	user = frappe.get_doc("User", user_name)
 	user.flags.ignore_permissions = True
 
-	manage_roles = managing_roles(configuration)
+	use_groups = using_groups(configuration)
 
 	if not entry or not entry["enabled"]:
-		if nothing_left_to_do(user, absent_user_action, manage_roles):
+		if nothing_left_to_do(user, absent_user_action, use_groups):
 			return {"user": user_name, "action": "unchanged"}
 
-		deprovision(user_name, absent_user_action, strip_entitlements=manage_roles)
+		deprovision(user_name, absent_user_action, strip_entitlements=use_groups)
 		frappe.db.commit()
 		return {"user": user_name, "action": absent_user_action}
 
-	if not manage_roles:
+	if not use_groups:
 		# Sign-in and offboarding only: the directory still has them, so there is
 		# nothing this app has an opinion about.
 		return {"user": user_name, "action": "unchanged"}
@@ -665,7 +665,7 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 	disable_unmapped = disabling_unmapped_users(configuration)
 
 	if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
-		if nothing_left_to_do(user, DISABLE_USER, manage_roles):
+		if nothing_left_to_do(user, DISABLE_USER, use_groups):
 			return {"user": user_name, "action": "unchanged"}
 
 		deprovision(
