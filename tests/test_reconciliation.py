@@ -24,7 +24,8 @@ class ReconciliationTestCase(CallbackTestCase):
 		self.map_group_to_role_profile("/erp/accounts", "Accounts Profile")
 
 	def add_linked_user(self, email, subject, **fields):
-		user = self.frappe.user_store.add(email=email, enabled=1, **fields)
+		fields.setdefault("enabled", 1)
+		user = self.frappe.user_store.add(email=email, **fields)
 		user.set_social_login_userid(PROVIDER, userid=subject)
 		return user
 
@@ -179,3 +180,151 @@ class TestSafetyRails(ReconciliationTestCase):
 		self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
 
 		self.assertEqual(local.get("enabled"), 1)
+
+
+class TestDisablingUnmappedUsers(ReconciliationTestCase):
+	"""The same verdict the login reaches, for the users who never log in again."""
+
+	def setUp(self):
+		super().setUp()
+		self.config.disable_unmapped_users = 1
+		self.config.absent_user_action = "Report Only"
+
+	def test_a_user_whose_groups_map_to_nothing_is_disabled(self):
+		user = self.add_linked_user("jane@example.com", "sub-1", role_profile_name="Sales Profile")
+		self.add_linked_user("john@example.com", "sub-2")
+
+		report = self.run_reconciliation(
+			[
+				self.directory_user("jane@example.com", "sub-1", groups=["/other/thing"]),
+				self.directory_user("john@example.com", "sub-2"),
+			]
+		)
+
+		self.assertEqual([entry["user"] for entry in report["unmapped"]], ["jane@example.com"])
+		self.assertEqual(user.get("enabled"), 0)
+		self.assertIsNone(user.get("role_profile_name"))
+		self.assertIn(
+			{"user": "jane@example.com", "keep_current": False, "force": True},
+			self.frappe.sessions.cleared,
+		)
+
+	def test_it_changes_nothing_with_the_option_off(self):
+		self.config.disable_unmapped_users = 0
+		user = self.add_linked_user("jane@example.com", "sub-1")
+
+		report = self.run_reconciliation(
+			[self.directory_user("jane@example.com", "sub-1", groups=["/other/thing"])]
+		)
+
+		self.assertEqual(report["unmapped"], [])
+		self.assertEqual(user.get("enabled"), 1)
+
+	def test_a_user_the_directory_vouches_for_again_is_enabled(self):
+		user = self.add_linked_user("jane@example.com", "sub-1", enabled=0)
+
+		report = self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
+
+		self.assertEqual(user.get("enabled"), 1)
+		self.assertEqual(user.get("role_profile_name"), "Sales Profile")
+		self.assertEqual([c["user"] for c in report["roles_changed"]], ["jane@example.com"])
+
+	def test_re_enabling_happens_even_when_the_roles_already_match(self):
+		"""Nothing else revisits a user who cannot log in, so this run has to notice."""
+		user = self.add_linked_user(
+			"jane@example.com", "sub-1", enabled=0, role_profile_name="Sales Profile"
+		)
+
+		self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
+
+		self.assertEqual(user.get("enabled"), 1)
+
+	def test_a_module_mapping_alone_keeps_a_user_enabled(self):
+		self.config.append(
+			"group_module_mappings", {"group": "/erp/viewers", "module_profile": "Restricted Modules"}
+		)
+		user = self.add_linked_user("jane@example.com", "sub-1")
+
+		report = self.run_reconciliation(
+			[self.directory_user("jane@example.com", "sub-1", groups=["/erp/viewers"])]
+		)
+
+		self.assertEqual(report["unmapped"], [])
+		self.assertEqual(user.get("enabled"), 1)
+
+	def test_a_dry_run_writes_nothing(self):
+		user = self.add_linked_user("jane@example.com", "sub-1")
+		self.add_linked_user("john@example.com", "sub-2")
+
+		report = self.run_reconciliation(
+			[
+				self.directory_user("jane@example.com", "sub-1", groups=["/other/thing"]),
+				self.directory_user("john@example.com", "sub-2"),
+			],
+			dry_run=True,
+		)
+
+		self.assertEqual(len(report["unmapped"]), 1)
+		self.assertEqual(user.get("enabled"), 1)
+
+	def test_a_run_that_would_disable_most_users_is_refused(self):
+		"""A groups query that comes back thin reads exactly like a mass departure."""
+		for index in range(4):
+			self.add_linked_user(f"user{index}@example.com", f"sub-{index}")
+
+		with self.assertRaises(Exception):
+			self.run_reconciliation(
+				[self.directory_user(f"user{index}@example.com", f"sub-{index}", groups=[]) for index in range(4)]
+			)
+
+		self.assertEqual(self.frappe.user_store.users["user1@example.com"].get("enabled"), 1)
+
+	def test_the_last_enabled_system_manager_is_kept(self):
+		user = self.add_linked_user(
+			"jane@example.com", "sub-1", roles=[{"role": "System Manager"}]
+		)
+		self.add_linked_user("john@example.com", "sub-2")
+
+		self.run_reconciliation(
+			[
+				self.directory_user("jane@example.com", "sub-1", groups=["/other/thing"]),
+				self.directory_user("john@example.com", "sub-2"),
+			]
+		)
+
+		self.assertEqual(user.get("enabled"), 1)
+		# The entitlements still go: only the account itself is protected.
+		self.assertEqual(self.roles_of(user), [])
+
+
+class TestDisablingUnmappedUsersOverTheWebhook(ReconciliationTestCase):
+	def setUp(self):
+		super().setUp()
+		self.config.disable_unmapped_users = 1
+		self.config.absent_user_action = "Report Only"
+
+	def reconcile_user(self, entry, subject="sub-1"):
+		with mock.patch.object(
+			self.reconciliation,
+			"get_directory",
+			return_value=mock.Mock(get_user=lambda **kwargs: entry),
+		):
+			return self.reconciliation.reconcile_user(PROVIDER, subject=subject)
+
+	def test_a_group_removal_disables_the_account_at_once(self):
+		user = self.add_linked_user("jane@example.com", "sub-1", role_profile_name="Sales Profile")
+
+		result = self.reconcile_user(
+			self.directory_user("jane@example.com", "sub-1", groups=["/other/thing"])
+		)
+
+		self.assertEqual(result["action"], "Disable User")
+		self.assertEqual(user.get("enabled"), 0)
+
+	def test_a_group_returning_enables_the_account_at_once(self):
+		user = self.add_linked_user("jane@example.com", "sub-1", enabled=0)
+
+		self.reconcile_user(self.directory_user("jane@example.com", "sub-1"))
+
+		self.assertEqual(user.get("enabled"), 1)
+		self.assertEqual(user.get("role_profile_name"), "Sales Profile")

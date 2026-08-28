@@ -19,13 +19,12 @@
    "reqd": 1
   },
   {
-   "description": "An ERPNext module profile to be applied if the corresponding group exists in the OIDC token.",
+   "description": "An ERPNext module profile to be applied if the corresponding group exists in the OIDC token. A row left empty - as \"Fetch Groups From Provider\" leaves the rows it imports - is ignored at login: it neither applies anything nor counts as a match.",
    "fieldname": "module_profile",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Module Profile",
-   "options": "Module Profile",
-   "reqd": 1
+   "options": "Module Profile"
   },
   {
    "default": "0",

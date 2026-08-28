@@ -13,6 +13,8 @@ Features:
 - Verification of the id token against the signing keys, audience and issuer of the identity provider.
 - Customizable claim names.
 - Fallback profiles (role and module) for users matching no mapped group, and a choice of what to do when there is no fallback either.
+- Disabling the Frappe account, not only the session, of a user whose groups grant nothing here - and enabling it again when they do.
+- Importing the group names from the identity provider, so the mappings are filled in from its own vocabulary rather than typed by hand.
 - Automatic user creation, following the site's signup settings or overriding them deliberately.
 - An endpoint that starts a login, so the identity provider can link straight into the site.
 
@@ -164,7 +166,12 @@ them. A claim the provider omits leaves the name on record alone.
 **Roles and modules**
 
 Map a group to a Role Profile, and optionally to a Module Profile. Fallback profiles
-apply when no mapped group matches.
+apply when no mapped group matches. Groups are matched as exact strings, so
+`erp-sales` does not match `erp-sales-readonly`.
+
+A row whose profile is left empty is ignored at login: it assigns nothing and does not
+count as a match, so a table half-filled by **Fetch Groups From Provider** below cannot
+shadow the fallback profiles.
 
 Mappings carry a **Priority**, lowest number first. It decides which profile wins where
 only one can be stored: the role profile on Frappe v15, and the module profile on every
@@ -179,6 +186,65 @@ matches a mapping and no fallback role profile is configured:
 | Remove All Roles | The roles and the module profile are stripped, so that removing someone from every group in the identity provider de-provisions them in Frappe. |
 | Deny Login | The login is refused. |
 
+**Disable Users With No Mapped Group** decides what happens to the account itself.
+Refusing a login is not the same as closing an account: a user turned away at the door
+keeps an enabled Frappe user, and with it its API keys, its seat on a site that bills
+them, its place in workflows and whatever local password it has - none of which the
+identity provider can revoke. Off by default.
+
+It composes with the setting above rather than replacing it. That one still decides the
+roles; this one decides whether the account stays usable:
+
+| When No Group Matches | Option off | Option on |
+| --- | --- | --- |
+| Keep Existing Roles | Nothing happens | Roles untouched, account disabled, login refused |
+| Remove All Roles | Roles stripped | Roles stripped, account disabled, login refused |
+| Deny Login | Login refused, account stays live | Login refused, account disabled |
+
+So access control becomes independent of role assignment: leave the action on
+**Keep Existing Roles**, turn this on, and group membership gates who can get in while
+the app never touches anybody's roles. A group in either mapping table counts, and so
+does a fallback profile - only a user for whom nothing at all resolves is disabled.
+
+Three things follow from turning it on:
+
+- **A user whose group comes back is enabled again at their next login.** Without that, a membership removed by mistake would disable someone permanently. It cuts the other way too: an account disabled by hand in Frappe is reopened if the provider still vouches for it, because the enabled flag is now the provider's to set.
+- **`Administrator`, `Guest` and the last enabled `System Manager` are never disabled**, and the guard is logged at WARNING when it fires. The last System Manager is also let in rather than refused: locking the site out through the same door the guard exists to keep open would defeat it. `Administrator` is not counted as that last System Manager, since it cannot log in through this app at all.
+- **Sessions are ended when an account is disabled.** A live session outlives the flag - Frappe's session is a cookie backed by its own record - so without this the account would keep working until `session_expiry`.
+
+Someone with no mapped group who has never logged in here is refused without an account
+being created at all, rather than getting a disabled shell.
+
+Every decision is logged at WARNING with the address, the groups the token carried, and
+what was done.
+
+**Fetch Groups From Provider**
+
+The group names in the mappings are strings that live in another system. A typo is
+silent - the row simply never matches - and stays silent until somebody logs in with no
+roles. With unmapped users disabled it stops being silent and becomes a lockout.
+
+The button on the configuration reads the names from the provider through the same
+admin API the reconciliation uses (**Directory Type**, **Directory URL** and its
+credentials, below - there is nothing new to configure) and adds the ones that are
+missing to both mapping tables, with the profile left blank for you to fill in.
+
+For Keycloak it reads the roles of the client whose Client ID the Social Login Key
+presents, falling back to the realm's group paths when that client defines none. Client
+roles are worth preferring: a group membership mapper is realm-wide by construction, so
+every client of the realm sees every group and "this user has no group here" never means
+anything. A client role belongs to one client and is invisible to the others. Bind the
+directory group to the client role in Keycloak - `APP-GGIL-Access` grants `ERP-Access` -
+and the membership still flows through unchanged; what changes is that the absence of
+one becomes a statement worth acting on. Keep the claim named `groups` and this app
+needs no other change: it simply receives a shorter, relevant list.
+
+It only ever adds. An existing row is never rewritten or removed, so running it again
+after defining a new role in Keycloak just appends that one. It reports how many names
+were new and how many were already mapped, and fails with a message naming what is
+missing - a credential, or a client the provider does not have - rather than silently
+adding nothing.
+
 #### How a login is handled
 
 1. The `state` returned by the provider is consumed through Frappe's single-use token. An unknown, expired or already-used one is refused.
@@ -186,9 +252,10 @@ matches a mapping and no fallback role profile is configured:
 3. The id token is verified: signature, audience, issuer and expiry.
 4. An address the provider marks as unverified is refused, unless that requirement is turned off.
 5. The Frappe user is resolved - by social login userid first, so an address changed at the identity provider keeps the account; then by email address, lowercased, which is what Frappe names User records by; and, if asked for, by `username`, for users provisioned by earlier versions of this app.
-6. `Administrator` and `Guest` can never be logged into this way, and a disabled user is refused.
-7. Role profiles and the module profile are assigned from the groups in the token, and the name is brought in step with the claims.
-8. If the assignment changed, the user's permission cache is cleared and their other sessions are ended, so a reduced set of roles takes effect immediately rather than at the next session.
+6. `Administrator` and `Guest` can never be logged into this way, and a disabled user is refused - unless unmapped users are disabled, in which case the groups decide, and a user whose group has returned is enabled again.
+7. The groups are resolved once, to role profiles and a module profile. If they resolve to nothing and unmapped users are disabled, the account is closed and the login refused.
+8. Role profiles and the module profile are assigned from that same resolution, and the name is brought in step with the claims.
+9. If the assignment changed, the user's permission cache is cleared and their other sessions are ended, so a reduced set of roles takes effect immediately rather than at the next session.
 
 All three endpoints are rate limited per IP. The limits are generous on purpose - an
 office arrives at one NAT address, and revoking every session at the provider sends one
@@ -268,6 +335,7 @@ provider on a schedule, under **Reconciliation** on the configuration:
 | Enable Reconciliation | Off by default. When on, the provider is asked which users still exist, are still enabled, and are in which groups. |
 | Frequency | Daily or hourly. The scheduler wakes hourly and skips providers that are not due. |
 | When A User Is Gone Or Disabled | `Report Only` (log it), `Remove All Roles` (keep the account, strip entitlements), or `Disable User`. |
+| Disable Users With No Mapped Group | Set under Roles, but applied here too: a run disables a user whose groups resolve to nothing, and enables one the directory vouches for again. A scheduled run and a login reach the same verdict about the same user. |
 | Directory Type / URL | `Keycloak` with the realm URL, or `Authentik` with its base URL. |
 | Service Account Client ID / Secret | Keycloak: a client with client authentication and service account roles on, whose service account holds `view-users` from realm-management. |
 | API Token | authentik: an API token. authentik users are matched by email, since what it puts in `sub` depends on the provider's subject mode. |
@@ -311,8 +379,13 @@ Three things it refuses to do, because a de-provisioning job that misfires is wo
 than one that does not run:
 
 - act on an empty directory response, which is a broken API call far more often than an empty directory;
-- act when more than half the linked users appear to be missing or disabled, which reads like a partial answer;
-- touch `Administrator`, `Guest`, or any user who has never signed in through this provider - the last of these has nothing tying it to a directory entry, so it is not the app's to judge.
+- act when more than half the linked users appear to be missing, disabled or unmapped, which reads like a partial answer - a groups query that comes back thin looks exactly like a mass departure;
+- touch `Administrator`, `Guest`, or any user who has never signed in through this provider - the last of these has nothing tying it to a directory entry, so it is not the app's to judge;
+- disable the last enabled `System Manager`, whichever setting asked for it. The guard is logged when it fires.
+
+One difference from a login worth knowing: reconciliation always strips the entitlements
+of a user whose groups resolve to nothing, where a login honours **When No Group
+Matches**. What the two agree on is the account itself.
 
 #### Upgrading
 

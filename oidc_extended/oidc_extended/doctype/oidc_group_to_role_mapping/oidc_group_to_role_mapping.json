@@ -19,13 +19,12 @@
    "reqd": 1
   },
   {
-   "description": "An ERPNext Role Profile to be assigned if the corresponding group exists in the OIDC token.",
+   "description": "An ERPNext Role Profile to be assigned if the corresponding group exists in the OIDC token. A row left empty - as \"Fetch Groups From Provider\" leaves the rows it imports - is ignored at login: it neither assigns anything nor counts as a match.",
    "fieldname": "role_profile",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Role Profile",
-   "options": "Role Profile",
-   "reqd": 1
+   "options": "Role Profile"
   },
   {
    "default": "0",

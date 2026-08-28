@@ -211,6 +211,7 @@ def install():
 
 	# frappe.rate_limiter.rate_limit - it is NOT an attribute of the frappe module.
 	frappe.msgprint = lambda *a, **kw: None
+	frappe.bold = lambda text: f"<b>{text}</b>"
 
 	logger, logger_calls = _make_logger()
 	frappe.logger = lambda *a, **kw: logger
@@ -295,6 +296,27 @@ def install():
 
 	frappe.get_meta = _Meta
 
+	def matches(values, filters):
+		"""Frappe's filter syntax, as far as this app uses it: equality and `in`."""
+		for fieldname, condition in (filters or {}).items():
+			value = values.get(fieldname)
+
+			if isinstance(condition, list | tuple) and len(condition) == 2:
+				operator, expected = condition
+
+				if operator == "in" and value not in expected:
+					return False
+				if operator == "not in" and value in expected:
+					return False
+				if operator in ("=", "==") and value != expected:
+					return False
+			elif value != condition:
+				return False
+
+		return True
+
+	frappe.matches = matches
+
 	def get_all(doctype, filters=None, fields=None, pluck=None, **kwargs):
 		filters = filters or {}
 		rows = []
@@ -302,11 +324,25 @@ def install():
 		if doctype == "User Social Login":
 			for user_name, user in frappe.user_store.users.items():
 				for row in user.get("social_logins", []):
-					if all(row.get(k) == v for k, v in filters.items()):
+					if matches(row.as_dict(), filters):
 						rows.append({"parent": user_name, **row.as_dict()})
+		elif doctype == "Has Role":
+			# A child table of User: one row per role held, `parent` naming the holder.
+			for user_name, user in frappe.user_store.users.items():
+				for row in user.get("roles", []):
+					values = {**row.as_dict(), "parent": user_name, "parenttype": "User"}
+
+					if matches(values, filters):
+						rows.append(values)
+		elif doctype == "User":
+			for name, doc in frappe.user_store.users.items():
+				values = {**doc.as_dict(), "name": name}
+
+				if matches(values, filters):
+					rows.append(values)
 		else:
 			for (dt, name), doc in frappe.docs.items():
-				if dt == doctype and all(doc.get(k) == v for k, v in filters.items()):
+				if dt == doctype and matches(doc.as_dict(), filters):
 					rows.append({"name": name, **doc.as_dict()})
 
 		if pluck:

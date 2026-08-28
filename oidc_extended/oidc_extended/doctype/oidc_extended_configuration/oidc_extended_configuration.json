@@ -27,6 +27,7 @@
   "fallback_role_profiles",
   "group_role_mappings",
   "unmapped_user_action",
+  "disable_unmapped_users",
   "modules_section",
   "fallback_module_profile",
   "group_module_mappings",
@@ -174,6 +175,13 @@
    "fieldtype": "Select",
    "label": "When No Group Matches",
    "options": "Keep Existing Roles\nRemove All Roles\nDeny Login"
+  },
+  {
+   "default": "0",
+   "description": "Disables the Frappe account of a user whose groups match no mapping above or below, and grant no fallback profile. Refusing the login is not the same as closing the account: a user denied at the door keeps an enabled account, and with it its API keys, its seat and its local password, none of which the identity provider can revoke. This composes with the setting above rather than replacing it - that one still decides what happens to the roles - so leaving it on \"Keep Existing Roles\" and turning this on lets group membership gate access without this app ever touching anybody's roles. A user whose group comes back is enabled again at their next login, so a membership removed by mistake is not permanent; by the same token, an account disabled by hand here is reopened if the provider still vouches for it. Administrator, Guest and the last enabled System Manager are never disabled - the guard is logged when it fires. Off by default.",
+   "fieldname": "disable_unmapped_users",
+   "fieldtype": "Check",
+   "label": "Disable Users With No Mapped Group"
   },
   {
    "fieldname": "modules_section",

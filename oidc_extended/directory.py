@@ -25,6 +25,11 @@ class EmptyDirectoryError(Exception):
 	pass
 
 
+class ClientNotFoundError(Exception):
+	"""The provider has no client under the id the Social Login Key presents."""
+	pass
+
+
 def get_directory(configuration):
 	"""The client for the directory this configuration names."""
 	directory_type = configuration.get("directory_type")
@@ -50,6 +55,16 @@ class Directory:
 		raise NotImplementedError
 
 	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
+		raise NotImplementedError
+
+	def get_group_names(self, client_id: str | None = None) -> tuple[list[str], str]:
+		"""The group names this site could map, and where they were read from.
+
+		Returns the vocabulary, not anybody's membership: it is what fills the mapping
+		tables in, so an administrator picks profiles from a list the provider gave
+		rather than copying strings by hand and finding out at the next login that one
+		of them had a typo.
+		"""
 		raise NotImplementedError
 
 	def get(self, url, **kwargs):
@@ -123,6 +138,69 @@ class KeycloakDirectory(Directory):
 		return users
 
 
+	def get_group_names(self, client_id: str | None = None) -> tuple[list[str], str]:
+		"""The client's own roles, falling back to the realm's groups.
+
+		Client roles first, because they are scoped by construction: a group membership
+		mapper is realm-wide, so every client of the realm sees every group and "this
+		user has no group here" never means anything. A client role belongs to one
+		client and is invisible to the others. Bind the directory group to the client
+		role in Keycloak and the membership still flows through unchanged - what
+		changes is that the absence of one becomes a statement worth acting on.
+
+		Realms that map realm groups into the token instead are not left out: when the
+		client defines no roles, the group paths are read instead, which is what a
+		membership mapper with "Full group path" on puts in the claim.
+		"""
+		headers = {"Authorization": f"Bearer {self.get_token()}"}
+		roles = self.get_client_roles(client_id, headers) if client_id else []
+
+		if roles:
+			return roles, f"the roles of the {client_id} client"
+
+		return self.get_group_paths(headers), "the groups of the realm"
+
+	def get_client_roles(self, client_id: str, headers: dict) -> list[str]:
+		"""The roles defined on one client, by its client id rather than its uuid."""
+		clients = self.get(
+			f"{self.admin_url}/clients", headers=headers, params={"clientId": client_id}
+		)
+
+		if not clients:
+			raise ClientNotFoundError(client_id)
+
+		roles = self.get(f"{self.admin_url}/clients/{clients[0]['id']}/roles", headers=headers)
+
+		return [role["name"] for role in roles if role.get("name")]
+
+	def get_group_paths(self, headers: dict) -> list[str]:
+		"""Every group path in the realm, subgroups included."""
+		paths = []
+
+		def collect(groups):
+			for group in groups:
+				path = group.get("path") or group.get("name")
+
+				if path:
+					paths.append(path)
+
+				collect(group.get("subGroups") or [])
+
+		first = 0
+
+		while True:
+			page = self.get(
+				f"{self.admin_url}/groups", headers=headers, params={"first": first, "max": PAGE_SIZE}
+			)
+			collect(page)
+
+			if len(page) < PAGE_SIZE:
+				break
+
+			first += PAGE_SIZE
+
+		return paths
+
 	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
 		"""One user, for acting on a single change rather than sweeping everyone."""
 		headers = {"Authorization": f"Bearer {self.get_token()}"}
@@ -194,6 +272,28 @@ class AuthentikDirectory(Directory):
 			page += 1
 
 		return users
+
+	def get_group_names(self, client_id: str | None = None) -> tuple[list[str], str]:
+		"""authentik's groups. It has no per-client role vocabulary to prefer."""
+		headers = {"Authorization": f"Bearer {self.configuration.get_password('directory_api_token')}"}
+		names = []
+		page = 1
+
+		while True:
+			result = self.get(
+				f"{self.url}/api/v3/core/groups/",
+				headers=headers,
+				params={"page": page, "page_size": PAGE_SIZE},
+			)
+			entries = result.get("results") or []
+			names.extend(entry["name"] for entry in entries if entry.get("name"))
+
+			if not result.get("pagination", {}).get("next") or not entries:
+				break
+
+			page += 1
+
+		return names, "the groups of the directory"
 
 	def get_user(self, subject: str | None = None, email: str | None = None) -> dict | None:
 		if not email:

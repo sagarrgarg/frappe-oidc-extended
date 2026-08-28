@@ -23,6 +23,10 @@ from frappe.sessions import clear_sessions
 from oidc_extended.callback import (
 	RESERVED_USERS,
 	apply_role_profiles,
+	disable_user,
+	disabling_unmapped_users,
+	enable_user,
+	has_no_mapped_group,
 	normalize_groups,
 	resolve_module_profile,
 	resolve_role_profiles,
@@ -65,6 +69,7 @@ def reconcile(provider: str, dry_run: int = 1) -> dict:
 def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 	configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider)
 	absent_user_action = configuration.get("absent_user_action") or REPORT_ONLY
+	disable_unmapped = disabling_unmapped_users(configuration)
 
 	directory_users = get_directory(configuration).get_users()
 
@@ -83,6 +88,7 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		"linked_users": 0,
 		"absent": [],
 		"disabled_at_provider": [],
+		"unmapped": [],
 		"roles_changed": [],
 		"unchanged": [],
 		"skipped": [],
@@ -105,15 +111,33 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 			report["disabled_at_provider"].append({"user": user_name, "action": absent_user_action})
 			continue
 
-		role_profiles = resolve_role_profiles(configuration, normalize_groups(entry["groups"]))
+		groups = normalize_groups(entry["groups"])
+		role_profiles = resolve_role_profiles(configuration, groups)
+		module_profile = resolve_module_profile(configuration, groups)
+
+		# The same evaluation the login does, so that a scheduled run and a login reach
+		# the same verdict about the same user.
+		if disable_unmapped and has_no_mapped_group(role_profiles, module_profile):
+			report["unmapped"].append({"user": user_name, "groups": entry["groups"]})
+			continue
+
+		# The identity provider vouches for them again, and this run is the only thing
+		# that will notice: nothing else revisits a user who cannot log in.
+		enable = disable_unmapped and not user.enabled
 		current = current_role_profiles(user)
 
-		if set(current) == set(role_profiles):
+		if set(current) == set(role_profiles) and not enable:
 			report["unchanged"].append(user_name)
 			continue
 
 		report["roles_changed"].append(
-			{"user": user_name, "from": current, "to": role_profiles, "groups": entry["groups"]}
+			{
+				"user": user_name,
+				"from": current,
+				"to": role_profiles,
+				"groups": entry["groups"],
+				"enable": enable,
+			}
 		)
 
 	guard_against_mass_change(report)
@@ -149,7 +173,9 @@ def current_role_profiles(user) -> list[str]:
 
 def guard_against_mass_change(report: dict):
 	"""Refuses a run that would de-provision most of the linked users."""
-	affected = len(report["absent"]) + len(report["disabled_at_provider"])
+	affected = (
+		len(report["absent"]) + len(report["disabled_at_provider"]) + len(report["unmapped"])
+	)
 
 	if not report["linked_users"] or not affected:
 		return
@@ -167,10 +193,20 @@ def apply_report(report, configuration, absent_user_action, by_subject, by_email
 	for entry in report["absent"] + report["disabled_at_provider"]:
 		deprovision(entry["user"], absent_user_action)
 
+	for entry in report["unmapped"]:
+		deprovision(
+			entry["user"],
+			DISABLE_USER,
+			reason=f"none of the groups {entry['groups']} grants access to this site",
+		)
+
 	for change in report["roles_changed"]:
 		user = frappe.get_doc("User", change["user"])
 		user.flags.ignore_permissions = True
 		groups = normalize_groups(change["groups"])
+
+		if change.get("enable"):
+			enable_user(user, f"the groups {change['groups']} grant access to this site again")
 
 		apply_role_profiles(user, change["to"])
 		user.module_profile = resolve_module_profile(configuration, groups)
@@ -185,7 +221,7 @@ def apply_report(report, configuration, absent_user_action, by_subject, by_email
 	frappe.db.commit()
 
 
-def deprovision(user_name: str, action: str):
+def deprovision(user_name: str, action: str, reason: str = ""):
 	"""Applies the configured action to a user the directory no longer vouches for."""
 	if action == REPORT_ONLY:
 		frappe.logger().info(f"Reconciliation: {user_name} is gone from the directory (report only).")
@@ -194,13 +230,15 @@ def deprovision(user_name: str, action: str):
 	user = frappe.get_doc("User", user_name)
 	user.flags.ignore_permissions = True
 
+	if action == DISABLE_USER:
+		# Before the roles are stripped: whether this is the last account that can
+		# administer the site is read from the roles it still holds.
+		disable_user(user, reason or "the directory no longer vouches for them")
+
 	# Strip entitlements in both cases: a disabled user that is re-enabled locally
 	# should not come back with the roles they had when they left.
 	apply_role_profiles(user, [])
 	user.module_profile = None
-
-	if action == DISABLE_USER:
-		user.enabled = 0
 
 	user.save()
 	clear_sessions(user=user_name, force=True)
@@ -395,12 +433,28 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 	user.flags.ignore_permissions = True
 	groups = normalize_groups(entry["groups"])
 	role_profiles = resolve_role_profiles(configuration, groups)
+	module_profile = resolve_module_profile(configuration, groups)
+	disable_unmapped = disabling_unmapped_users(configuration)
 
-	if set(current_role_profiles(user)) == set(role_profiles):
+	if disable_unmapped and has_no_mapped_group(role_profiles, module_profile):
+		deprovision(
+			user_name,
+			DISABLE_USER,
+			reason=f"none of the groups {entry['groups']} grants access to this site",
+		)
+		frappe.db.commit()
+		return {"user": user_name, "action": DISABLE_USER}
+
+	enable = disable_unmapped and not user.enabled
+
+	if set(current_role_profiles(user)) == set(role_profiles) and not enable:
 		return {"user": user_name, "action": "unchanged"}
 
+	if enable:
+		enable_user(user, f"the groups {entry['groups']} grant access to this site again")
+
 	apply_role_profiles(user, role_profiles)
-	user.module_profile = resolve_module_profile(configuration, groups)
+	user.module_profile = module_profile
 	user.save()
 	clear_sessions(user=user_name, force=True)
 	frappe.clear_cache(user=user_name)
