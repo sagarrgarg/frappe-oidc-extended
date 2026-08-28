@@ -219,6 +219,14 @@ def users_to_reconcile(provider: str, configuration) -> list[tuple[str, str | No
 	never heard of cannot be told apart from one who has left. Service accounts and
 	integrations go in the exemption list.
 
+	Even then it reaches enabled System Users only. A site running ERPNext has portal
+	accounts - customers, suppliers, applicants - which are enabled users who will never
+	appear in a staff directory, and sweeping them in would read every one of them as
+	somebody who has left and lock them all out of the portal. There can be thousands of
+	them, so the exemption list is no answer and the mass-change guard only catches it
+	above half. Anyone who has actually signed in through this provider is included
+	whatever their user type, so the accounts this app creates are covered either way.
+
 	Disabled users that are linked are still included, so that one the provider vouches
 	for again can be enabled again. A disabled user who is not linked is left out - the
 	widened sweep is about the people currently working here.
@@ -234,7 +242,12 @@ def users_to_reconcile(provider: str, configuration) -> list[tuple[str, str | No
 
 	if frappe.utils.cint(configuration.get("reconcile_all_users")):
 		names.update(
-			frappe.get_all("User", filters={"enabled": 1}, pluck="name", limit_page_length=0)
+			frappe.get_all(
+				"User",
+				filters={"enabled": 1, "user_type": "System User"},
+				pluck="name",
+				limit_page_length=0,
+			)
 		)
 
 	return sorted((name, subjects.get(name)) for name in names if name not in exempt)
@@ -275,9 +288,12 @@ def nothing_left_to_do(user, action: str, manage_roles: bool = True) -> bool:
 		return False
 
 	if not manage_roles:
-		# The entitlements are the ERP's, so they are not evidence of anything here.
-		# Whether the account is closed is the whole of what was asked for.
-		return action == DISABLE_USER
+		# The entitlements are the ERP's, so they are not evidence of anything here, and
+		# whether the account is closed is the whole of what was asked for - which the
+		# check above has already answered. "Remove All Roles" has nothing to remove, so
+		# it is done the moment it is asked; reporting it every run would rewrite
+		# nothing and count towards the guard for ever.
+		return True
 
 	return not (
 		current_role_profiles(user) or user.get("roles") or user.get("module_profile")

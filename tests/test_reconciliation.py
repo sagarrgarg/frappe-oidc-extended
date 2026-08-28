@@ -580,6 +580,7 @@ class TestReconcilingEveryEnabledUser(ReconciliationTestCase):
 
 	def add_local_user(self, email, **fields):
 		fields.setdefault("enabled", 1)
+		fields.setdefault("user_type", "System User")
 		return self.frappe.user_store.add(email=email, **fields)
 
 	def test_by_default_a_user_who_has_never_signed_in_is_untouched(self):
@@ -638,6 +639,34 @@ class TestReconcilingEveryEnabledUser(ReconciliationTestCase):
 
 		self.assertEqual(service.get("enabled"), 1)
 		self.assertEqual(report["absent"], [])
+
+	def test_portal_accounts_are_never_swept_in(self):
+		"""Customers, suppliers and applicants are enabled users who will never be in a
+		staff directory. Sweeping them in reads every one of them as somebody who has
+		left, and there can be thousands - the exemption list is no answer to that."""
+		self.config.reconcile_all_users = 1
+		customer = self.frappe.user_store.add(
+			email="customer@shop.example", enabled=1, user_type="Website User"
+		)
+		self.add_linked_user("jane@example.com", "sub-1")
+
+		report = self.run_reconciliation([self.directory_user("jane@example.com", "sub-1")])
+
+		self.assertEqual(report["absent"], [])
+		self.assertEqual(customer.get("enabled"), 1)
+
+	def test_someone_who_has_signed_in_is_covered_whatever_their_user_type(self):
+		"""Including the accounts this app creates, which default to Website User."""
+		self.config.reconcile_all_users = 1
+		user = self.add_linked_user("jane@example.com", "sub-1", user_type="Website User")
+		for index in range(3):
+			self.add_linked_user(f"staff{index}@example.com", f"staff-{index}")
+
+		self.run_reconciliation(
+			[self.directory_user(f"staff{index}@example.com", f"staff-{index}") for index in range(3)]
+		)
+
+		self.assertEqual(user.get("enabled"), 0)
 
 	def test_a_disabled_local_user_is_not_swept_in(self):
 		"""The widened sweep is about the people currently working here."""

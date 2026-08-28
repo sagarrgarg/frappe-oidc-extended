@@ -50,6 +50,9 @@ class OIDCExtendedConfiguration(Document):
 		profile on every save, so a role granted to a user who also has a profile is
 		gone by the time the save returns. The two tables are alternatives.
 		"""
+		if not frappe.utils.cint(self.manage_roles):
+			return
+
 		profiles = {row.group for row in (self.group_role_mappings or []) if row.role_profile}
 		grants = {row.group for row in (self.group_role_grants or []) if row.role}
 		both = sorted(profiles & grants)
@@ -72,6 +75,9 @@ class OIDCExtendedConfiguration(Document):
 		everyone who matches no group gets the fallback, which means the disable never
 		fires and the site believes it is gating access when it is not.
 		"""
+		if not frappe.utils.cint(self.manage_roles):
+			return
+
 		if not frappe.utils.cint(self.get("disable_unmapped_users")):
 			return
 

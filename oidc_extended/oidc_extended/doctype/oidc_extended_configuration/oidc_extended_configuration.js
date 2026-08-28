@@ -9,7 +9,8 @@ frappe.ui.form.on('OIDC Extended Configuration', {
     refresh: function(frm) {
         set_absent_user_actions(frm);
 
-        if (frm.is_new()) {
+        if (frm.is_new() || !frm.doc.manage_roles) {
+            // Nothing to fill in: the mapping tables are not in effect on this site.
             return;
         }
 
@@ -20,6 +21,7 @@ frappe.ui.form.on('OIDC Extended Configuration', {
 
     manage_roles: function(frm) {
         set_absent_user_actions(frm);
+        frm.refresh();
     }
 });
 

@@ -260,7 +260,7 @@
   {
    "default": "0",
    "depends_on": "eval:doc.enable_reconciliation",
-   "description": "Off by default, in which case only users who have signed in through this provider at least once are reconciled - a social login record is what ties a Frappe user to a directory entry. Turn it on to reconcile every enabled user instead, matching them to the directory by email address, so that an account somebody created here by hand is closed too when that person leaves. Read what that means first: a user the directory has never heard of - a service account, an integration, a contractor set up locally - is indistinguishable from somebody who has left, and will be disabled. List those below.",
+   "description": "Off by default, in which case only users who have signed in through this provider at least once are reconciled - a social login record is what ties a Frappe user to a directory entry. Turn it on to reconcile every enabled System User as well, matching them to the directory by email address, so that an account somebody created here by hand is closed too when that person leaves. Portal accounts are never included, whatever this is set to: customers, suppliers and applicants are enabled users who will never appear in a staff directory. Anyone who has signed in through this provider is included whatever their user type. Read what the rest of it means first: a System User the directory has never heard of - a service account, an integration, a contractor set up locally - is indistinguishable from somebody who has left, and will be disabled. List those below.",
    "fieldname": "reconcile_all_users",
    "fieldtype": "Check",
    "label": "Reconcile Every Enabled User"

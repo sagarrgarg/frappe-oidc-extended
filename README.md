@@ -405,7 +405,7 @@ provider on a schedule, under **Reconciliation** on the configuration:
 | --- | --- |
 | Enable Reconciliation | Off by default. When on, the provider is asked which users still exist, are still enabled, and are in which groups. |
 | Frequency | `Daily`, `Hourly` or `Every 15 Minutes`. The scheduler calls the task every quarter of an hour and the task returns immediately unless that provider is due, so the frequency is honoured whenever the scheduler happens to land, a change takes effect from the next quarter-hour rather than the next migrate, and a run that overruns its interval is not joined by a second one. |
-| Reconcile Every Enabled User | Off by default, in which case only users who have signed in through this provider are considered - a social login record is the one thing tying a Frappe user to a directory entry. On, every enabled user is matched to the directory by email instead, so an account somebody made here by hand is closed too when that person leaves. Read the warning below before turning it on. |
+| Reconcile Every Enabled User | Off by default, in which case only users who have signed in through this provider are considered - a social login record is the one thing tying a Frappe user to a directory entry. On, every enabled **System User** is matched to the directory by email as well, so an account somebody made here by hand is closed too when that person leaves. Portal accounts - customers, suppliers, applicants - are never included either way. Read the warning below before turning it on. |
 | Never Reconcile These Users | The exemptions that make the above safe. |
 | When A User Is Gone Or Disabled | `Report Only` (log it), `Remove All Roles` (keep the account, strip entitlements), or `Disable User`. |
 | Disable Users With No Mapped Group | Set under Roles, but applied here too: a run disables a user whose groups resolve to nothing, and enables one the directory vouches for again. A scheduled run and a login reach the same verdict about the same user. |
@@ -439,6 +439,11 @@ Group changes are applied the same way, which is what closes the other half of t
 a user removed from a mapped group has their role profiles recomputed and their
 sessions ended, without waiting for a login that may never come.
 
+Pick the frequency for the size of the site: every considered user is loaded on every
+run, so `Every 15 Minutes` suits the few hundred staff of a site that turned this on for
+offboarding, and `Hourly` or `Daily` suits a larger one. Nothing breaks either way - the
+runs just cost more than they find.
+
 Two things about the shorter cycles. A run that fails does not retry immediately: the
 slot is claimed before the work starts, so a worker killed half way through does not
 come straight back and redo it - the next attempt is at the next interval, or whenever
@@ -448,11 +453,18 @@ are not asked for, which is what makes a quarter-hourly sweep of a real realm re
 rather than thousands of calls a day.
 
 **Before turning on Reconcile Every Enabled User**, understand what it cannot know. A
-user the directory has never heard of is indistinguishable from one who has left: a
-service account, an integration, a contractor set up locally. Every one of them reads as
-absent and is disabled on the first run. List them under **Never Reconcile These Users**
-first, and use the dry run below to see who would be caught. The guard that refuses a run
-affecting more than half the users is the backstop, not the plan.
+System User the directory has never heard of is indistinguishable from one who has left:
+a service account, an integration, a contractor set up locally. Every one of them reads
+as absent and is disabled on the first run. List them under **Never Reconcile These
+Users** first, and use the dry run below to see who would be caught. The guard that
+refuses a run affecting more than half the users is the backstop, not the plan.
+
+Website Users are deliberately out of scope. On an ERPNext site those are customers,
+suppliers and applicants - enabled accounts that will never appear in a staff directory,
+and there can be thousands of them, so neither the exemption list nor the half-the-users
+guard would save you. Anyone who has actually signed in through the provider is
+reconciled whatever their user type, so the accounts this app creates are covered either
+way.
 
 **Run it as a dry run first.** From the console or a client:
 
