@@ -186,6 +186,11 @@ the fallbacks, not **When No Group Matches**, not **Disable Users With No Mapped
 Group**. A login signs the person in, creates their account if it is new, and leaves
 every role the ERP gave them exactly as it found them.
 
+The User form follows the switch too. Where the app maps groups to roles it warns that
+an edit will be replaced at the next login and makes the Role Profile and Module Profile
+fields read-only, because they will be. Where it does not, it says so and leaves the
+fields alone - locking them would stop exactly the work this mode exists for.
+
 What still happens in that mode is the part that cannot be done by hand reliably:
 somebody removed from the directory has their Frappe account disabled and their sessions
 ended, on the schedule below. `Report Only` and `Disable User` are the only two actions

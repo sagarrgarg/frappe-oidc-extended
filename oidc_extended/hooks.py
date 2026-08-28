@@ -38,6 +38,12 @@ doctype_js = {
 	"User": "public/js/user_oidc_warning.js"
 }
 
+# Tells the desk which providers decide roles, so that the User form can warn about the
+# ones that do and stay out of the way of the ones that do not. Settled once per session
+# rather than read from the form: the configuration is a System Manager document and the
+# User form is open to more people than that.
+extend_bootinfo = "oidc_extended.boot.boot_session"
+
 # Asks each configured identity provider which of its users are still there, still
 # enabled and still in which groups. Called every quarter of an hour, which is the
 # shortest cadence the Frequency setting offers; the task itself returns immediately
