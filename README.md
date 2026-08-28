@@ -9,7 +9,7 @@ user it belongs to, and turns the provider's group membership into Frappe roles.
 
 Features:
 
-- Group Multi-Mapping: assign roles and modules by mapping OIDC *groups* to Frappe **Role Profiles** and **Module Profiles**.
+- Group Multi-Mapping: assign roles and modules by mapping OIDC *groups* to Frappe **Role Profiles**, individual **Roles** and **Module Profiles**.
 - Verification of the id token against the signing keys, audience and issuer of the identity provider.
 - Customizable claim names.
 - Fallback profiles (role and module) for users matching no mapped group, and a choice of what to do when there is no fallback either.
@@ -158,24 +158,53 @@ expiry is required.
 | User Provisioning | Whether a login by someone without a Frappe account creates one. Follows the Sign-ups field of the Social Login Key by default, which is what Frappe's own social logins do; can be set to always or never create users. |
 | User Type For New Users | The User Type new users are given, `Website User` by default. Frappe replaces either standard type on every save with one derived from the desk access of the user's roles (`User.set_system_user`), so on a site where System Users are billed seats, the role profiles you map are what decides the cost. A custom User Type is honoured as set. |
 | Require A Verified Email Address | On by default. Refuses a login the provider marks as having an unverified address. Users are matched to Frappe accounts by email, so an unverified address is a way into whoever owns that address here. Providers that do not send the claim are unaffected. |
-| Match Users By Username | Off by default. Adds a last-resort match against a Frappe user whose `username` equals the provider's user id claim, for users provisioned by older versions of this app. The claim is not a Frappe username, so this can match an unrelated account carrying that name. |
+| Match Users By Username | **Deprecated**, and hidden unless it is already on, so no new configuration is offered it. It adds a last-resort match against a Frappe user whose `username` equals the provider's user id claim, and exists only for users provisioned by versions of this app that stored the claim there. The claim is not a Frappe username, so it can match an unrelated account carrying that name. Sites upgrading keep it on (`preserve_username_matching`); turn it off and save, and it disappears. |
 
 A user's first and last name follow the claims on each login, when the provider sends
 them. A claim the provider omits leaves the name on record alone.
 
 **Roles and modules**
 
-Map a group to a Role Profile, and optionally to a Module Profile. Fallback profiles
-apply when no mapped group matches. Groups are matched as exact strings, so
-`erp-sales` does not match `erp-sales-readonly`.
+Map a group to a Role Profile, to individual Roles, and optionally to a Module Profile.
+Fallback profiles apply when no mapped group matches. Groups are matched as exact
+strings, so `erp-sales` does not match `erp-sales-readonly`.
 
-A row whose profile is left empty is ignored at login: it assigns nothing and does not
-count as a match, so a table half-filled by **Fetch Groups From Provider** below cannot
-shadow the fallback profiles.
+A row whose profile or role is left empty is ignored at login: it assigns nothing and
+does not count as a match, so a table half-filled by **Fetch Groups From Provider**
+below cannot shadow the fallback profiles.
 
 Mappings carry a **Priority**, lowest number first. It decides which profile wins where
 only one can be stored: the role profile on Frappe v15, and the module profile on every
 version, since the User doctype holds a single one.
+
+**Group To Role Grants** is the other way to map, and the one that composes. Where the
+profile mappings compete - a role profile is a single Link on Frappe v15, so two mapped
+groups produce one profile between them - roles add up. "Everything an accounts user
+has, and approval on top" has nowhere to live as profiles on v15; as two rows granting
+two roles it is ordinary.
+
+What makes granting safe is that only the roles the table *names* are ever taken away.
+The managed set is every role appearing anywhere in the grants table; on each login the
+user ends up holding `(what they have − managed) ∪ (what their groups grant)`. So a role
+an administrator gave by hand in Frappe survives every login, while a role the table
+claims is withdrawn the moment the group goes. Reconcile the whole role table instead
+and the only choices are never revoking anything or wiping every manual grant.
+
+**The two are alternatives per user, not layers**, and Frappe is what decides that:
+`User.validate` empties the role table and refills it from the assigned role profile on
+every save (`populate_role_profile_roles`), so a granted role does not survive alongside
+one - a role added by hand in the user form disappears the same way. If a user resolves
+to both, the profile wins and the dropped grants are logged at WARNING. Mapping the same
+group to both is warned about when the configuration is saved. On a site that grants
+roles, grant them throughout.
+
+One consequence worth knowing: as soon as the grants table has a row, the role table is
+the managed set's to reconcile, so **Remove All Roles** and reconciliation stop emptying
+it wholesale. What a role profile granted is still stripped when that profile is taken
+away, so de-provisioning still lands. The exception is an account being closed - by the
+option below, or because the directory no longer has the user - where everything is
+stripped: the managed set exists to avoid stepping on a decision about a live user, and
+that is no longer one.
 
 **When No Group Matches** decides what happens when the token carries no group that
 matches a mapping and no fallback role profile is configured:
@@ -203,8 +232,14 @@ roles; this one decides whether the account stays usable:
 
 So access control becomes independent of role assignment: leave the action on
 **Keep Existing Roles**, turn this on, and group membership gates who can get in while
-the app never touches anybody's roles. A group in either mapping table counts, and so
-does a fallback profile - only a user for whom nothing at all resolves is disabled.
+the app never touches anybody's roles. A group in any mapping table counts - a profile, a
+role or a module - and so does a fallback profile: only a user for whom nothing at all
+resolves is disabled.
+
+Which is why **a fallback profile disarms this option entirely**. A fallback matches
+everybody, so nobody is ever unmapped and the disable can never fire; the configuration
+says so when you save it with both. Clear the fallbacks to gate access on group
+membership.
 
 Three things follow from turning it on:
 
@@ -227,7 +262,8 @@ roles. With unmapped users disabled it stops being silent and becomes a lockout.
 The button on the configuration reads the names from the provider through the same
 admin API the reconciliation uses (**Directory Type**, **Directory URL** and its
 credentials, below - there is nothing new to configure) and adds the ones that are
-missing to both mapping tables, with the profile left blank for you to fill in.
+missing to all three mapping tables, with the profile or role left blank for you to fill
+in. Delete the rows in the tables you are not using; a blank row does nothing either way.
 
 For Keycloak it reads the roles of the client whose Client ID the Social Login Key
 presents, falling back to the realm's group paths when that client defines none. Client
@@ -253,8 +289,8 @@ adding nothing.
 4. An address the provider marks as unverified is refused, unless that requirement is turned off.
 5. The Frappe user is resolved - by social login userid first, so an address changed at the identity provider keeps the account; then by email address, lowercased, which is what Frappe names User records by; and, if asked for, by `username`, for users provisioned by earlier versions of this app.
 6. `Administrator` and `Guest` can never be logged into this way, and a disabled user is refused - unless unmapped users are disabled, in which case the groups decide, and a user whose group has returned is enabled again.
-7. The groups are resolved once, to role profiles and a module profile. If they resolve to nothing and unmapped users are disabled, the account is closed and the login refused.
-8. Role profiles and the module profile are assigned from that same resolution, and the name is brought in step with the claims.
+7. The groups are resolved once, to role profiles, roles and a module profile. If they resolve to nothing and unmapped users are disabled, the account is closed and the login refused.
+8. Role profiles, granted roles and the module profile are assigned from that same resolution, and the name is brought in step with the claims.
 9. If the assignment changed, the user's permission cache is cleared and their other sessions are ended, so a reduced set of roles takes effect immediately rather than at the next session.
 
 All three endpoints are rate limited per IP. The limits are generous on purpose - an

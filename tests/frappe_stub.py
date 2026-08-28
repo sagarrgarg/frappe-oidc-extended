@@ -263,6 +263,15 @@ def install():
 				return FakeDoc(data, store=frappe.user_store)
 			return FakeDoc(data)
 		doctype, name = args[0], args[1]
+		if doctype == "Role Profile":
+			if name not in frappe.flags.role_profile_roles:
+				raise DoesNotExistError(f"Role Profile {name} not found")
+			return FakeDoc(
+				{
+					"name": name,
+					"roles": [FakeDoc({"role": r}) for r in frappe.flags.role_profile_roles[name]],
+				}
+			)
 		if doctype == "User":
 			doc = frappe.user_store.users.get(name)
 			if not doc:

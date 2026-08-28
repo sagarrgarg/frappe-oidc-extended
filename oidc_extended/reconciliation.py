@@ -22,14 +22,18 @@ from frappe.sessions import clear_sessions
 
 from oidc_extended.callback import (
 	RESERVED_USERS,
+	apply_role_grants,
 	apply_role_profiles,
 	disable_user,
 	disabling_unmapped_users,
 	enable_user,
 	has_no_mapped_group,
+	managed_roles,
 	normalize_groups,
 	resolve_module_profile,
 	resolve_role_profiles,
+	resolve_roles,
+	role_grants_target,
 )
 from oidc_extended.directory import EmptyDirectoryError, get_directory
 
@@ -70,6 +74,7 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 	configuration = frappe.get_cached_doc("OIDC Extended Configuration", provider)
 	absent_user_action = configuration.get("absent_user_action") or REPORT_ONLY
 	disable_unmapped = disabling_unmapped_users(configuration)
+	managed = managed_roles(configuration)
 
 	directory_users = get_directory(configuration).get_users()
 
@@ -114,10 +119,11 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		groups = normalize_groups(entry["groups"])
 		role_profiles = resolve_role_profiles(configuration, groups)
 		module_profile = resolve_module_profile(configuration, groups)
+		granted_roles = resolve_roles(configuration, groups)
 
 		# The same evaluation the login does, so that a scheduled run and a login reach
 		# the same verdict about the same user.
-		if disable_unmapped and has_no_mapped_group(role_profiles, module_profile):
+		if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
 			report["unmapped"].append({"user": user_name, "groups": entry["groups"]})
 			continue
 
@@ -125,8 +131,14 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 		# that will notice: nothing else revisits a user who cannot log in.
 		enable = disable_unmapped and not user.enabled
 		current = current_role_profiles(user)
+		current_roles = [row.get("role") for row in user.get("roles", []) if row.get("role")]
+		target_roles = role_grants_target(user, granted_roles, managed)
 
-		if set(current) == set(role_profiles) and not enable:
+		if (
+			set(current) == set(role_profiles)
+			and set(current_roles) == set(target_roles)
+			and not enable
+		):
 			report["unchanged"].append(user_name)
 			continue
 
@@ -135,6 +147,8 @@ def run_reconciliation(provider: str, dry_run: bool = True) -> dict:
 				"user": user_name,
 				"from": current,
 				"to": role_profiles,
+				"roles_from": sorted(current_roles),
+				"roles_to": sorted(target_roles),
 				"groups": entry["groups"],
 				"enable": enable,
 			}
@@ -200,15 +214,19 @@ def apply_report(report, configuration, absent_user_action, by_subject, by_email
 			reason=f"none of the groups {entry['groups']} grants access to this site",
 		)
 
+	managed = managed_roles(configuration)
+
 	for change in report["roles_changed"]:
 		user = frappe.get_doc("User", change["user"])
 		user.flags.ignore_permissions = True
 		groups = normalize_groups(change["groups"])
+		granted_roles = resolve_roles(configuration, groups)
 
 		if change.get("enable"):
 			enable_user(user, f"the groups {change['groups']} grant access to this site again")
 
-		apply_role_profiles(user, change["to"])
+		apply_role_profiles(user, change["to"], grants_govern_roles=bool(managed))
+		apply_role_grants(user, granted_roles, managed)
 		user.module_profile = resolve_module_profile(configuration, groups)
 		user.save()
 
@@ -434,9 +452,11 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 	groups = normalize_groups(entry["groups"])
 	role_profiles = resolve_role_profiles(configuration, groups)
 	module_profile = resolve_module_profile(configuration, groups)
+	granted_roles = resolve_roles(configuration, groups)
+	managed = managed_roles(configuration)
 	disable_unmapped = disabling_unmapped_users(configuration)
 
-	if disable_unmapped and has_no_mapped_group(role_profiles, module_profile):
+	if disable_unmapped and has_no_mapped_group(role_profiles, module_profile, granted_roles):
 		deprovision(
 			user_name,
 			DISABLE_USER,
@@ -446,16 +466,24 @@ def reconcile_user(provider: str, subject: str | None = None, email: str | None 
 		return {"user": user_name, "action": DISABLE_USER}
 
 	enable = disable_unmapped and not user.enabled
+	current_roles = [row.get("role") for row in user.get("roles", []) if row.get("role")]
+	target_roles = role_grants_target(user, granted_roles, managed)
 
-	if set(current_role_profiles(user)) == set(role_profiles) and not enable:
+	if (
+		set(current_role_profiles(user)) == set(role_profiles)
+		and set(current_roles) == set(target_roles)
+		and not enable
+	):
 		return {"user": user_name, "action": "unchanged"}
 
 	if enable:
 		enable_user(user, f"the groups {entry['groups']} grant access to this site again")
 
-	apply_role_profiles(user, role_profiles)
+	apply_role_profiles(user, role_profiles, grants_govern_roles=bool(managed))
+	apply_role_grants(user, granted_roles, managed)
 	user.module_profile = module_profile
 	user.save()
+
 	clear_sessions(user=user_name, force=True)
 	frappe.clear_cache(user=user_name)
 	frappe.db.commit()

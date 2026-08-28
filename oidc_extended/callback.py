@@ -615,6 +615,12 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
     role_profiles = resolve_role_profiles(oidc_extended_configuration, groups)
     frappe.logger().debug(f"Role profiles resolved for user {email}: {role_profiles}")
 
+    # And to individual roles, which add up rather than competing. Only the roles this
+    # configuration names are ever touched, so a role granted here by hand survives.
+    granted_roles = resolve_roles(oidc_extended_configuration, groups)
+    managed = managed_roles(oidc_extended_configuration)
+    frappe.logger().debug(f"Roles granted to {email} by their groups: {granted_roles}")
+
     # Delegate module blocking to Frappe's native module profile field. Resolved here,
     # before anything is written, because whether these groups mean anything on this
     # site is a single question - and the answer decides both the entitlements below
@@ -623,10 +629,10 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
     module_profile = resolve_module_profile(oidc_extended_configuration, groups)
 
     unmapped_user_action = oidc_extended_configuration.unmapped_user_action or KEEP_EXISTING_ROLES
-    deny_login = not role_profiles and unmapped_user_action == DENY_LOGIN
+    deny_login = not role_profiles and not granted_roles and unmapped_user_action == DENY_LOGIN
 
     if disabling_unmapped_users(oidc_extended_configuration) and (
-        deny_login or has_no_mapped_group(role_profiles, module_profile)
+        deny_login or has_no_mapped_group(role_profiles, module_profile, granted_roles)
     ):
         # The account itself is refused, not only this session: an enabled Frappe user
         # keeps its API keys, its seat and its local password, none of which the
@@ -653,6 +659,9 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
 
         if disable_user(user, f"none of the groups {groups} grants access to this site"):
             if unmapped_user_action == REMOVE_ALL_ROLES:
+                # Everything, not only the managed set: the managed set exists so that a
+                # deliberate local decision about a live user is not stepped on, and
+                # this account is being closed.
                 apply_role_profiles(user, [])
                 user.module_profile = None
 
@@ -668,7 +677,7 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
     if deny_login:
         frappe.logger().warning(
             f"Denying login for {email}: no group of {groups} is mapped to a role profile "
-            f"and no fallback role profile is configured."
+            f"or a role, and no fallback role profile is configured."
         )
         respond_no_mapped_group()
         return
@@ -681,14 +690,20 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         enable_user(user, f"the groups {groups} grant access to this site again")
 
     if role_profiles or unmapped_user_action == REMOVE_ALL_ROLES:
-        role_profiles_changed = apply_role_profiles(user, role_profiles)
+        entitlements_changed = apply_role_profiles(
+            user, role_profiles, grants_govern_roles=bool(managed)
+        )
     else:
         # "Keep Existing Roles": the identity provider told us nothing about this
         # user's entitlements, so leave whatever Frappe has on record alone.
         frappe.logger().info(
             f"No role profile matched for {email}; keeping the roles the user already has."
         )
-        role_profiles_changed = False
+        entitlements_changed = False
+
+    # On top of whatever the profile decided, and only over the roles this
+    # configuration names.
+    entitlements_changed = apply_role_grants(user, granted_roles, managed) or entitlements_changed
 
     if module_profile or unmapped_user_action == REMOVE_ALL_ROLES:
         user.module_profile = module_profile or None
@@ -713,10 +728,10 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         )
         return
 
-    if role_profiles_changed:
+    if entitlements_changed:
         frappe.logger().info(
-            f"Role profiles changed for {email}. Clearing active sessions to enforce the new "
-            f"permissions instantly."
+            f"The entitlements of {email} changed. Clearing active sessions to enforce the "
+            f"new permissions instantly."
         )
         # The previous frappe.cache().hdel("sessions", ...) and hdel("bhas_role", ...) calls
         # cleared nothing: Frappe keeps sessions in a hash named "session" keyed by sid, not
@@ -1250,6 +1265,102 @@ def resolve_module_profile(configuration, groups: list[str]) -> str | None:
     return configuration.get("fallback_module_profile") or None
 
 
+def resolve_roles(configuration, groups: list[str]) -> list[str]:
+    """The roles granted directly by the given groups.
+
+    Roles add up where profiles compete. A role profile is a single Link on Frappe
+    v15, so two groups that both map to a profile can only ever produce one of them -
+    which leaves nowhere to put "everything an accounts user has, and approval on top".
+    Every row whose group the token carries grants its role, so that combination is
+    just two rows.
+
+    Rows whose role is still empty are skipped, as they are in the profile mappings:
+    an imported group nobody has filled in yet grants nothing.
+    """
+    granted = [
+        row.get("role")
+        for row in configuration.get("group_role_grants", [])
+        if row.get("group") in groups and row.get("role")
+    ]
+
+    return list(dict.fromkeys(granted))
+
+
+def managed_roles(configuration) -> set[str]:
+    """Every role this configuration claims, matched or not.
+
+    This is what makes the grants revocable without them being destructive. A role
+    named anywhere in the table is the identity provider's to give and to take away,
+    and every other role on the user is somebody's deliberate decision here. Reconcile
+    the whole role table instead and the choice is between never revoking anything and
+    wiping every grant an administrator made by hand.
+    """
+    return {
+        row.get("role") for row in configuration.get("group_role_grants", []) if row.get("role")
+    }
+
+
+def role_grants_target(user, granted: list[str], managed: set[str]) -> list[str]:
+    """The roles the user should end up holding: (current - managed) | granted."""
+    current = [row.get("role") for row in user.get("roles", []) if row.get("role")]
+    kept = [role for role in current if role not in managed]
+
+    return list(dict.fromkeys(kept + list(granted)))
+
+
+def role_profile_would_overwrite_grants(user) -> bool:
+    """Whether Frappe will rewrite this user's role table from a role profile on save.
+
+    `User.validate` calls `populate_role_profile_roles`, which empties the role table
+    and refills it from the assigned profile whenever one is assigned - on every save,
+    not only the first. So a role profile and a directly granted role cannot both be
+    held. Frappe enforces that, not this app: a role added by hand in the user form
+    disappears the same way.
+
+    Which means the two mappings are alternatives, not layers. Map a group to a role
+    profile or to roles; to express "everything an accounts user has, and approval on
+    top" on Frappe v15, where only one profile can be assigned, use roles for both.
+    """
+    return bool(user.get("role_profile_name") or user.get("role_profiles"))
+
+
+def apply_role_grants(user, granted: list[str], managed: set[str]) -> bool:
+    """Reconciles the roles this app manages, leaving every other role alone.
+
+    Returns whether the role table moved. Does nothing when a role profile is
+    assigned, since Frappe would undo it during the save that follows.
+    """
+    if not managed and not granted:
+        return False
+
+    if role_profile_would_overwrite_grants(user):
+        if granted:
+            frappe.logger().warning(
+                f"Not granting {granted} to {user.name or user.get('email')}: the role profile "
+                f"{user.get('role_profile_name') or user.get('role_profiles')} is assigned, "
+                f"and Frappe rewrites the whole role table from it on every save. Map this "
+                f"group to a role profile or to roles, not to both."
+            )
+
+        return False
+
+    current = [row.get("role") for row in user.get("roles", []) if row.get("role")]
+    final = role_grants_target(user, granted, managed)
+
+    if set(final) == set(current):
+        return False
+
+    frappe.logger().info(
+        f"Roles of {user.name or user.get('email')}: {sorted(current)} -> {sorted(final)}."
+    )
+    user.set("roles", [])
+
+    for role in final:
+        user.append("roles", {"role": role})
+
+    return True
+
+
 def user_has_multiple_role_profiles() -> bool:
     """True on Frappe versions whose User doctype has the "role_profiles" child table.
 
@@ -1259,24 +1370,44 @@ def user_has_multiple_role_profiles() -> bool:
     return bool(frappe.get_meta("User").has_field("role_profiles"))
 
 
-def apply_role_profiles(user, role_profiles: list[str]) -> bool:
+def roles_of_role_profiles(role_profiles: list[str]) -> set[str]:
+    """The roles those Role Profiles grant, for working out what one of them had given."""
+    roles = set()
+
+    for name in role_profiles:
+        try:
+            profile = frappe.get_cached_doc("Role Profile", name)
+        except frappe.DoesNotExistError:
+            # Deleted since it was assigned. Nothing to attribute to it.
+            continue
+
+        roles.update(row.get("role") for row in profile.get("roles", []) if row.get("role"))
+
+    return roles
+
+
+def apply_role_profiles(user, role_profiles: list[str], grants_govern_roles: bool = False) -> bool:
     """Writes the role profiles in the layout of the running Frappe version.
 
     Returns whether the assignment changed, so the caller can invalidate sessions
     only when the user's entitlements actually moved.
+
+    `grants_govern_roles` says that this configuration also grants roles directly, in
+    which case the role table belongs to the managed set and is not emptied wholesale
+    here - see `apply_role_grants`.
     """
     if user_has_multiple_role_profiles():
-        current = {row.get("role_profile") for row in user.get("role_profiles", [])}
-        changed = current != set(role_profiles)
+        previous = [row.get("role_profile") for row in user.get("role_profiles", [])]
+        changed = set(previous) != set(role_profiles)
 
         user.set("role_profiles", [])
         for role_profile in role_profiles:
             user.append("role_profiles", {"role_profile": role_profile})
     else:
-        current = user.get("role_profile_name")
+        previous = [user.get("role_profile_name")] if user.get("role_profile_name") else []
         # Only one profile can be stored, so the highest priority match wins.
         new = role_profiles[0] if role_profiles else None
-        changed = current != new
+        changed = (previous[0] if previous else None) != new
         user.role_profile_name = new
 
         if len(role_profiles) > 1:
@@ -1290,8 +1421,22 @@ def apply_role_profiles(user, role_profiles: list[str]) -> bool:
         # User.populate_role_profile_roles only rewrites the roles while a profile is
         # set. Strip them explicitly so that de-provisioning in the identity provider
         # reaches Frappe.
-        changed = changed or bool(user.get("roles"))
+        current_roles = [row.get("role") for row in user.get("roles", []) if row.get("role")]
+
+        if grants_govern_roles:
+            # Only what the profile they just lost had granted. Everything else is
+            # either the grants table's, which reconciles it, or somebody's deliberate
+            # decision here, which is not this app's to undo.
+            stale = roles_of_role_profiles(previous)
+            kept = [role for role in current_roles if role not in stale]
+        else:
+            kept = []
+
+        changed = changed or kept != current_roles
         user.set("roles", [])
+
+        for role in kept:
+            user.append("roles", {"role": role})
 
     return changed
 
@@ -1314,14 +1459,17 @@ def disabling_unmapped_users(configuration) -> bool:
     return bool(frappe.utils.cint(configuration.get("disable_unmapped_users")))
 
 
-def has_no_mapped_group(role_profiles: list[str], module_profile: str | None) -> bool:
+def has_no_mapped_group(
+    role_profiles: list[str], module_profile: str | None, roles: list[str] | None = None
+) -> bool:
     """Whether the groups of this login grant anything at all on this site.
 
-    Both mapping tables count, and so do the fallbacks - a site that gates access
-    through module mappings alone, or that gives everyone a fallback profile, has
-    already said what an unrecognised group should get.
+    Every mapping table counts, and so do the fallbacks - a site that gates access
+    through module mappings alone, or through direct role grants, or that gives
+    everyone a fallback profile, has already said what an unrecognised group should
+    get.
     """
-    return not role_profiles and not module_profile
+    return not role_profiles and not module_profile and not roles
 
 
 def is_last_enabled_system_manager(user) -> bool:

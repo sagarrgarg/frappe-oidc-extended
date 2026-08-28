@@ -26,6 +26,7 @@
   "roles_section",
   "fallback_role_profiles",
   "group_role_mappings",
+  "group_role_grants",
   "unmapped_user_action",
   "disable_unmapped_users",
   "modules_section",
@@ -118,10 +119,11 @@
   },
   {
    "default": "0",
-   "description": "Also matches a login to a Frappe user whose username equals the identity provider's user id claim, when nothing else matched. Only needed for users provisioned by versions of this app that stored the claim there: the claim is not a Frappe username, so this can match an unrelated account that happens to carry that name.",
+   "depends_on": "eval:doc.match_users_by_username",
+   "description": "Deprecated, and hidden unless it is already on. Also matches a login to a Frappe user whose username equals the identity provider's user id claim, when nothing else matched. It exists only for users provisioned by versions of this app that stored the claim there; the claim is not a Frappe username, so it can match an unrelated account that happens to carry that name. Sites that have never run those versions should leave it off - turn it off and save, and it disappears.",
    "fieldname": "match_users_by_username",
    "fieldtype": "Check",
-   "label": "Match Users By Username"
+   "label": "Match Users By Username (Deprecated)"
   },
   {
    "fieldname": "verification_section",
@@ -159,7 +161,7 @@
    "fieldtype": "Table",
    "label": "Fallback Role Profiles",
    "options": "OIDC Fallback Role Profile",
-   "description": "If a user has no matching group mappings, they will be assigned these fallback role profiles."
+   "description": "If a user has no matching group mappings, they will be assigned these fallback role profiles. Consider leaving this empty: a fallback grants permissions to a user the identity provider said nothing about, and it counts as a mapped group, so with \"Disable Users With No Mapped Group\" on nobody is ever unmapped and that option can never fire."
   },
   {
    "fieldname": "group_role_mappings",
@@ -167,6 +169,13 @@
    "label": "Group To Role Mappings",
    "options": "OIDC Group To Role Mapping",
    "description": "Map OIDC groups to ERPNext roles. This assigns permissions allowing users to access data and make changes based on their role."
+  },
+  {
+   "fieldname": "group_role_grants",
+   "fieldtype": "Table",
+   "label": "Group To Role Grants",
+   "options": "OIDC Group To Role",
+   "description": "Map OIDC groups to individual Roles. Where the profile mappings above compete - a role profile is a single Link on Frappe v15, so only the highest-priority match is assigned - these add up: a user in three mapped groups is granted all three roles, which is how \"everything an accounts user has, and approval on top\" is expressed. Only the roles named in this table are ever taken away, so a role granted here by hand in Frappe survives every login."
   },
   {
    "default": "Keep Existing Roles",

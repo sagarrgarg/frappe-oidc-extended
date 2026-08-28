@@ -328,3 +328,58 @@ class TestDisablingUnmappedUsersOverTheWebhook(ReconciliationTestCase):
 
 		self.assertEqual(user.get("enabled"), 1)
 		self.assertEqual(user.get("role_profile_name"), "Sales Profile")
+
+
+class TestRoleGrants(ReconciliationTestCase):
+	"""Directly granted roles are reconciled too, and only the managed ones."""
+
+	def grant(self, group, role):
+		self.config.append("group_role_grants", {"group": group, "role": role})
+
+	def test_a_group_removal_takes_the_granted_role_back(self):
+		self.grant("/erp/approvers", "Accounts Manager")
+		user = self.add_linked_user(
+			"jane@example.com", "sub-1", roles=[{"role": "Accounts Manager"}]
+		)
+
+		report = self.run_reconciliation(
+			[self.directory_user("jane@example.com", "sub-1", groups=["/erp/sales"])]
+		)
+
+		self.assertEqual(self.roles_of(user), ["Sales User", "Sales Manager"])
+		self.assertEqual(report["roles_changed"][0]["roles_from"], ["Accounts Manager"])
+
+	def test_a_role_granted_by_hand_survives_a_run(self):
+		self.grant("/erp/approvers", "Accounts Manager")
+		user = self.add_linked_user("jane@example.com", "sub-1", roles=[{"role": "Projects User"}])
+
+		self.run_reconciliation(
+			[self.directory_user("jane@example.com", "sub-1", groups=["/erp/approvers"])]
+		)
+
+		self.assertEqual(self.roles_of(user), ["Projects User", "Accounts Manager"])
+
+	def test_a_user_whose_grants_already_match_is_left_alone(self):
+		self.grant("/erp/approvers", "Accounts Manager")
+		user = self.add_linked_user(
+			"jane@example.com", "sub-1", roles=[{"role": "Accounts Manager"}]
+		)
+
+		report = self.run_reconciliation(
+			[self.directory_user("jane@example.com", "sub-1", groups=["/erp/approvers"])]
+		)
+
+		self.assertEqual(report["unchanged"], ["jane@example.com"])
+		self.assertEqual(user.save_count, 0)
+
+	def test_a_granted_role_counts_as_a_mapped_group(self):
+		self.config.disable_unmapped_users = 1
+		self.grant("/erp/approvers", "Accounts Manager")
+		user = self.add_linked_user("jane@example.com", "sub-1")
+
+		report = self.run_reconciliation(
+			[self.directory_user("jane@example.com", "sub-1", groups=["/erp/approvers"])]
+		)
+
+		self.assertEqual(report["unmapped"], [])
+		self.assertEqual(user.get("enabled"), 1)

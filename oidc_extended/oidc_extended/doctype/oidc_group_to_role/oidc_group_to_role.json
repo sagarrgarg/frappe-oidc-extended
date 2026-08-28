@@ -1,0 +1,40 @@
+{
+ "actions": [],
+ "creation": "2026-08-28 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "group",
+  "role"
+ ],
+ "fields": [
+  {
+   "description": "A group from the OIDC token. Every row whose group the token carries grants its role, so several groups add up instead of competing.",
+   "fieldname": "group",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Group",
+   "reqd": 1
+  },
+  {
+   "description": "The role granted while the user is in that group, and taken away when they leave it. A row left empty - as \"Fetch Groups From Provider\" leaves the rows it imports - is ignored at login: it grants nothing and does not count as a match.",
+   "fieldname": "role",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Role",
+   "options": "Role"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-28 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "OIDC Extended",
+ "name": "OIDC Group To Role",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

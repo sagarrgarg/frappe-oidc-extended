@@ -44,9 +44,13 @@ function fetch_groups(frm) {
                             indicator: 'green',
                             message: __('Read {0} names from {1}.', [result.groups.length, result.source])
                                 + '<ul>'
-                                + '<li>' + __('Role mappings: {0} added, {1} already mapped.', [
+                                + '<li>' + __('Role profile mappings: {0} added, {1} already mapped.', [
                                     result.group_role_mappings_added,
                                     result.group_role_mappings_present
+                                ]) + '</li>'
+                                + '<li>' + __('Role grants: {0} added, {1} already mapped.', [
+                                    result.group_role_grants_added,
+                                    result.group_role_grants_present
                                 ]) + '</li>'
                                 + '<li>' + __('Module mappings: {0} added, {1} already mapped.', [
                                     result.group_module_mappings_added,

@@ -19,7 +19,7 @@ from oidc_extended.directory import ClientNotFoundError, get_directory
 
 # The two tables a group name can appear in. The profile column of each is what an
 # administrator fills in afterwards; until they do, the row is ignored at login.
-MAPPING_TABLES = ("group_role_mappings", "group_module_mappings")
+MAPPING_TABLES = ("group_role_mappings", "group_role_grants", "group_module_mappings")
 
 # What each directory type needs before it can be asked anything.
 REQUIRED_CREDENTIALS = {
@@ -82,8 +82,8 @@ def fetch_groups(provider: str) -> dict:
 
 	frappe.logger().info(
 		f"Fetched {len(names)} group names for {provider} from {source}: "
-		f"{result['group_role_mappings_added']} added to the role mappings, "
-		f"{result['group_module_mappings_added']} to the module mappings."
+		+ ", ".join(f"{result[f'{table}_added']} added to {table}" for table in MAPPING_TABLES)
+		+ "."
 	)
 
 	return result
