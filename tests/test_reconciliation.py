@@ -293,8 +293,9 @@ class TestDisablingUnmappedUsers(ReconciliationTestCase):
 		)
 
 		self.assertEqual(user.get("enabled"), 1)
-		# The entitlements still go: only the account itself is protected.
-		self.assertEqual(self.roles_of(user), [])
+		# And the role, not only the flag: an enabled System Manager stripped of the
+		# System Manager role leaves the site exactly as unadministrable.
+		self.assertEqual(self.roles_of(user), ["System Manager"])
 
 
 class TestDisablingUnmappedUsersOverTheWebhook(ReconciliationTestCase):
@@ -517,3 +518,53 @@ class TestNoChurn(ReconciliationTestCase):
 		self.assertEqual(report["unchanged"], ["jane@example.com"])
 		self.assertEqual(user.save_count, 0)
 		self.assertEqual(self.frappe.sessions.cleared, [])
+
+
+class TestTheSiteKeepsAnAdministrator(ReconciliationTestCase):
+	def test_two_system_managers_losing_their_groups_at_once_leaves_one(self):
+		"""Both are enabled when the report is built, so the guard has to hold at the
+		moment each is written, not at the moment the report was drawn up."""
+		self.config.disable_unmapped_users = 1
+		self.config.absent_user_action = "Report Only"
+		self.add_linked_user("a@example.com", "sub-a", roles=[{"role": "System Manager"}])
+		self.add_linked_user("b@example.com", "sub-b", roles=[{"role": "System Manager"}])
+		for index in range(6):
+			self.add_linked_user(f"u{index}@example.com", f"sub-u{index}")
+
+		directory = [
+			self.directory_user("a@example.com", "sub-a", groups=["/nowhere"]),
+			self.directory_user("b@example.com", "sub-b", groups=["/nowhere"]),
+		] + [self.directory_user(f"u{index}@example.com", f"sub-u{index}") for index in range(6)]
+
+		self.run_reconciliation(directory)
+
+		administrable = [
+			name
+			for name, user in self.frappe.user_store.users.items()
+			if user.get("enabled")
+			and any(row.get("role") == "System Manager" for row in user.get("roles", []))
+		]
+		self.assertEqual(administrable, ["b@example.com"])
+
+	def test_a_departed_system_manager_who_is_the_last_one_is_left_alone(self):
+		self.config.absent_user_action = "Disable User"
+		user = self.add_linked_user(
+			"jane@example.com", "sub-1", roles=[{"role": "System Manager"}]
+		)
+		self.add_linked_user("john@example.com", "sub-2")
+
+		self.run_reconciliation([self.directory_user("john@example.com", "sub-2")])
+
+		self.assertEqual(user.get("enabled"), 1)
+		self.assertEqual(self.roles_of(user), ["System Manager"])
+
+	def test_remove_all_roles_does_not_strip_the_last_one_either(self):
+		self.config.absent_user_action = "Remove All Roles"
+		user = self.add_linked_user(
+			"jane@example.com", "sub-1", roles=[{"role": "System Manager"}]
+		)
+		self.add_linked_user("john@example.com", "sub-2")
+
+		self.run_reconciliation([self.directory_user("john@example.com", "sub-2")])
+
+		self.assertEqual(self.roles_of(user), ["System Manager"])

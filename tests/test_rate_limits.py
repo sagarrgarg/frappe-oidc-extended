@@ -26,3 +26,26 @@ class TestRateLimits(CallbackTestCase):
 	def test_the_limits_are_per_ip(self):
 		for endpoint in (self.callback.custom, self.callback.start, self.callback.backchannel_logout):
 			self.assertTrue(endpoint.rate_limit["ip_based"])
+
+
+class TestStateChangingEndpointsRefuseGet(CallbackTestCase):
+	"""Frappe checks a CSRF token on everything except GET, so anything that writes
+	must not answer one."""
+
+	def test_the_reconciliation_is_post_only(self):
+		from oidc_extended import reconciliation
+
+		self.assertEqual(reconciliation.reconcile.allowed_methods, ["POST"])
+
+	def test_the_webhook_is_post_only(self):
+		from oidc_extended import reconciliation
+
+		self.assertEqual(reconciliation.webhook.allowed_methods, ["POST"])
+
+	def test_fetching_groups_is_post_only(self):
+		from oidc_extended import groups
+
+		self.assertEqual(groups.fetch_groups.allowed_methods, ["POST"])
+
+	def test_the_back_channel_logout_is_post_only(self):
+		self.assertEqual(self.callback.backchannel_logout.allowed_methods, ["POST"])

@@ -229,8 +229,10 @@ class TestGuards(DisableUnmappedTestCase):
 		self.unmapped_login()
 
 		self.assertEqual(user.get("enabled"), 1)
+		self.assertEqual(self.roles_of(user), ["System Manager"])
 		self.assertIn(
-			"Not disabling jane@example.com: jane@example.com is the last enabled System Manager on this site",
+			"Leaving jane@example.com exactly as they are: jane@example.com is the last "
+			"enabled System Manager on this site",
 			"\n".join(self.warnings()),
 		)
 
@@ -240,6 +242,17 @@ class TestGuards(DisableUnmappedTestCase):
 
 		self.unmapped_login()
 
+		self.assertLoggedIn("jane@example.com")
+
+	def test_remove_all_roles_does_not_strip_the_last_system_manager(self):
+		"""An enabled account without the role that makes it useful is the same lockout."""
+		user = self.add_existing_user(roles=[{"role": "System Manager"}])
+		self.config.unmapped_user_action = "Remove All Roles"
+
+		self.unmapped_login()
+
+		self.assertEqual(user.get("enabled"), 1)
+		self.assertEqual(self.roles_of(user), ["System Manager"])
 		self.assertLoggedIn("jane@example.com")
 
 	def test_deny_login_still_refuses_when_the_guard_fires(self):

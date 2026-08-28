@@ -657,7 +657,22 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
             respond_no_mapped_group()
             return
 
-        if disable_user(user, f"none of the groups {groups} grants access to this site"):
+        refusal = may_disable(user)
+
+        if refusal:
+            frappe.logger().warning(
+                f"Leaving {user.name} exactly as they are: {refusal}. An enabled account "
+                f"stripped of the role that makes it useful is the same lockout as a "
+                f"disabled one, so neither is done here."
+            )
+            # Carry on as though the option were off and the action were "Keep Existing
+            # Roles", so that the site does not lock itself out through the one door the
+            # guard exists to hold open. "Deny Login" still refuses below: that setting
+            # was already refusing them before this option existed.
+            unmapped_user_action = KEEP_EXISTING_ROLES
+        else:
+            disable_user(user, f"none of the groups {groups} grants access to this site")
+
             if unmapped_user_action == REMOVE_ALL_ROLES:
                 # Everything, not only the managed set: the managed set exists so that a
                 # deliberate local decision about a live user is not stepped on, and
@@ -669,10 +684,6 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
             frappe.db.commit()
             respond_no_mapped_group()
             return
-
-        # A guard refused the disable - this account is one of the few ways back into
-        # the site. It has been logged; the login carries on as it would with the
-        # option off, so that the site does not lock itself out.
 
     if deny_login:
         frappe.logger().warning(
@@ -690,9 +701,22 @@ def custom(code: str | None = None, state: str | None = None, error: str | None 
         enable_user(user, f"the groups {groups} grant access to this site again")
 
     if role_profiles or unmapped_user_action == REMOVE_ALL_ROLES:
-        entitlements_changed = apply_role_profiles(
-            user, role_profiles, grants_govern_roles=bool(managed)
-        )
+        # "Remove All Roles" with nothing to put back takes every role off the account,
+        # which locks the site out as surely as disabling it would if this is the last
+        # account that can administer it. The same guard as the disable, for the same
+        # reason - and it applies whether or not unmapped users are disabled.
+        refusal = None if role_profiles else may_disable(user)
+
+        if refusal:
+            frappe.logger().warning(
+                f"Not stripping the roles of {user.name}: {refusal}. Keeping the roles "
+                f"they have."
+            )
+            entitlements_changed = False
+        else:
+            entitlements_changed = apply_role_profiles(
+                user, role_profiles, grants_govern_roles=bool(managed)
+            )
     else:
         # "Keep Existing Roles": the identity provider told us nothing about this
         # user's entitlements, so leave whatever Frappe has on record alone.
@@ -1296,7 +1320,9 @@ def managed_roles(configuration) -> set[str]:
     wiping every grant an administrator made by hand.
     """
     return {
-        row.get("role") for row in configuration.get("group_role_grants", []) if row.get("role")
+        row.get("role")
+        for row in configuration.get("group_role_grants", [])
+        if row.get("role") and row.get("group")
     }
 
 

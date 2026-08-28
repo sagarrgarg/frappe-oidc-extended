@@ -244,7 +244,7 @@ membership.
 Three things follow from turning it on:
 
 - **A user whose group comes back is enabled again at their next login.** Without that, a membership removed by mistake would disable someone permanently. It cuts the other way too: an account disabled by hand in Frappe is reopened if the provider still vouches for it, because the enabled flag is now the provider's to set.
-- **`Administrator`, `Guest` and the last enabled `System Manager` are never disabled**, and the guard is logged at WARNING when it fires. The last System Manager is also let in rather than refused: locking the site out through the same door the guard exists to keep open would defeat it. `Administrator` is not counted as that last System Manager, since it cannot log in through this app at all.
+- **`Administrator`, `Guest` and the last enabled `System Manager` are never disabled - and never stripped of their roles either**, since an enabled account without the role that makes it useful is the same lockout as a disabled one. That guard holds wherever this app de-provisions somebody: this option, `Remove All Roles`, and the reconciliation alike. It is logged at WARNING when it fires. The last System Manager is also let in rather than refused, because locking the site out through the same door the guard exists to keep open would defeat it, and `Administrator` is not counted as that last System Manager, since it cannot log in through this app at all.
 - **Sessions are ended when an account is disabled.** A live session outlives the flag - Frappe's session is a cookie backed by its own record - so without this the account would keep working until `session_expiry`.
 
 Someone with no mapped group who has never logged in here is refused without an account
@@ -418,10 +418,10 @@ all.
 Three things it refuses to do, because a de-provisioning job that misfires is worse
 than one that does not run:
 
+- de-provision the last enabled `System Manager`, by any route - neither their account nor their roles are touched, because a site nobody can administer cannot be fixed;
 - act on an empty directory response, which is a broken API call far more often than an empty directory;
 - act when more than half the linked users appear to be missing, disabled or unmapped, which reads like a partial answer - a groups query that comes back thin looks exactly like a mass departure;
 - touch `Administrator`, `Guest`, or any user who has never signed in through this provider - the last of these has nothing tying it to a directory entry, so it is not the app's to judge;
-- disable the last enabled `System Manager`, whichever setting asked for it. The guard is logged when it fires.
 
 One difference from a login worth knowing: reconciliation always strips the entitlements
 of a user whose groups resolve to nothing, where a login honours **When No Group

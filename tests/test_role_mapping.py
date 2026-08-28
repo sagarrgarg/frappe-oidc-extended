@@ -181,3 +181,37 @@ class TestApplyRoleProfilesReturnValue(CallbackTestCase):
 		user = self.add_existing_user(roles=[{"role": "Sales User"}])
 		self.assertTrue(self.callback.apply_role_profiles(user, []))
 		self.assertEqual(self.roles_of(user), [])
+
+
+class TestTheSiteKeepsAnAdministrator(CallbackTestCase):
+	"""Removing every role from the last account that can administer the site locks it
+	out as surely as disabling that account would, so neither is done."""
+
+	def test_remove_all_roles_spares_the_last_system_manager(self):
+		user = self.add_existing_user(roles=[{"role": "System Manager"}])
+		self.config.unmapped_user_action = "Remove All Roles"
+
+		self.run_callback(claims=self.id_token_claims(groups=["not-mapped"]))
+
+		self.assertEqual(self.roles_of(user), ["System Manager"])
+		self.assertLoggedIn("jane@example.com")
+
+	def test_it_strips_a_system_manager_who_is_not_the_last_one(self):
+		user = self.add_existing_user(roles=[{"role": "System Manager"}])
+		self.frappe.user_store.add(
+			email="other@example.com", enabled=1, roles=[{"role": "System Manager"}]
+		)
+		self.config.unmapped_user_action = "Remove All Roles"
+
+		self.run_callback(claims=self.id_token_claims(groups=["not-mapped"]))
+
+		self.assertEqual(self.roles_of(user), [])
+
+	def test_a_matched_profile_still_replaces_their_roles(self):
+		"""The guard covers automated de-provisioning, not a profile somebody mapped."""
+		user = self.add_existing_user(roles=[{"role": "System Manager"}])
+		self.map_group_to_role_profile("erp-sales", "Sales Profile")
+
+		self.run_callback(claims=self.id_token_claims(groups=["erp-sales"]))
+
+		self.assertEqual(self.roles_of(user), ["Sales User", "Sales Manager"])

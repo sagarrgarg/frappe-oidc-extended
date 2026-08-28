@@ -25,6 +25,7 @@ from oidc_extended.callback import (
 	apply_role_grants,
 	apply_role_profiles,
 	disable_user,
+	may_disable,
 	disabling_unmapped_users,
 	enable_user,
 	has_no_mapped_group,
@@ -58,12 +59,16 @@ RATE_LIMIT_WINDOW = 60
 RESOURCE_PATH_USER = re.compile(r"users/([^/?#]+)")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def reconcile(provider: str, dry_run: int = 1) -> dict:
 	"""Compares Frappe against the directory and reports, or applies, the difference.
 
 	Runs as a dry run unless told otherwise, so the report can be read before anything
 	is written.
+
+	POST only. With `dry_run=0` this de-provisions users, and Frappe checks a CSRF token
+	on everything except GET - so a System Manager who followed a link could otherwise
+	have run a live reconciliation without knowing it.
 	"""
 	frappe.only_for("System Manager")
 
@@ -284,9 +289,21 @@ def deprovision(user_name: str, action: str, reason: str = ""):
 	user = frappe.get_doc("User", user_name)
 	user.flags.ignore_permissions = True
 
+	# Read before anything is stripped: whether this is the last account that can
+	# administer the site is a question about the roles it still holds. The guard covers
+	# the entitlements as well as the flag, because an enabled System Manager without
+	# the System Manager role is the same lockout as a disabled one - and "Remove All
+	# Roles" would otherwise walk straight into it.
+	refusal = may_disable(user)
+
+	if refusal:
+		frappe.logger().warning(
+			f"Reconciliation is leaving {user_name} exactly as they are: {refusal}. "
+			f"The reason to act was: {reason or 'the directory no longer vouches for them'}."
+		)
+		return
+
 	if action == DISABLE_USER:
-		# Before the roles are stripped: whether this is the last account that can
-		# administer the site is read from the roles it still holds.
 		disable_user(user, reason or "the directory no longer vouches for them")
 
 	# Strip entitlements in both cases: a disabled user that is re-enabled locally
